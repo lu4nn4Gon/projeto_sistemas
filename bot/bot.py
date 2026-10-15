@@ -1,41 +1,75 @@
 import zmq
 import msgpack
 import time
+import os
 
-context = zmq.Context()
-socket = context.socket(zmq.REQ)
+nome = os.getenv("BOT_NOME", "Luanna")
+canal = os.getenv("BOT_CANAL", "geral")
+
+contexto = zmq.Context()
+socket = contexto.socket(zmq.REQ)
 socket.connect("tcp://broker:8000")
 
-nome = "Luanna"
 
-while True:
-
-    # mensagem de login
+# enviando mensagem
+def enviar(tipo, nome=""):
     mensagem = {
-        "tipo": "login",
+        "tipo": tipo,
         "nome": nome,
         "timestamp": time.time()
     }
 
-    # Mensagem vira binário e é enviada
     dados = msgpack.packb(mensagem)
     socket.send(dados)
 
-    print(f"Bot {nome} enviou login: {mensagem}")
+    print(f"Bot enviou: {mensagem}", flush=True)
 
-    # Espera resposta do servidor
     resposta_bytes = socket.recv()
-
-    # Resposta binária vira dicionário
     resposta = msgpack.unpackb(resposta_bytes, raw=False)
 
-    print(f"Bot {nome} recebeu: {resposta}")
+    print(f"Bot recebeu: {resposta}", flush=True)
+
+    return resposta
+
+
+if nome.strip() == "":
+    print("Erro: nome vazio")
+    exit()
+
+
+# efetuando login
+while True:
+    resposta = enviar("login", nome)
 
     if resposta["status"] == "sucesso":
-        print(f"Seu login foi realizado com sucesso! Bem-vinda, {nome}!")
+        print(f"Login realizado com sucesso! Bem-vinda, {nome}!")
         break
 
+    print("Erro no login. Tentando novamente em 10 segundos...")
+    time.sleep(10)
+
+
+# mostrando os canais existentes
+resposta = enviar("listar_canais")
+
+if resposta["status"] == "sucesso":
+    print("Canais existentes:", resposta.get("canais", []))
+
+
+# criando um canal
+if canal.strip() != "":
+    resposta = enviar("criar_canal", canal)
+
+    if resposta["status"] == "sucesso":
+        print(f"Canal {canal} criado com sucesso!")
     else:
-        print(f"Erro: {resposta.get('mensagem', 'Erro desconhecido')}")
-        print("Tentando novamente em 10 segundos...")
-        time.sleep(10)
+        print(resposta["mensagem"])
+
+resposta = enviar("listar_canais")
+
+if resposta["status"] == "sucesso":
+    print("Canais disponíveis:", resposta.get("canais", []))
+
+
+socket.close()
+contexto.term()

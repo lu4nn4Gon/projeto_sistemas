@@ -1,0 +1,47 @@
+services:
+
+  broker:
+    build: ./broker
+    container_name: broker
+
+  servidor1:
+    build: ./servidor
+    container_name: servidor1
+    working_dir: /dados
+    volumes:
+      - dados_servidor1:/dados
+    depends_on:
+      - broker
+
+  servidor2:
+    build: ./servidor
+    container_name: servidor2
+    working_dir: /dados
+    volumes:
+      - dados_servidor2:/dados
+    depends_on:
+      - broker
+
+  bot1:
+    build: ./bot
+    container_name: bot1
+    environment:
+      BOT_NOME: Luanna
+      BOT_CANAL: promos
+    depends_on:
+      - servidor1
+      - servidor2
+
+  bot2:
+    build: ./bot
+    container_name: bot2
+    environment:
+      BOT_NOME: Roberta
+      BOT_CANAL: sextou
+    depends_on:
+      - servidor1
+      - servidor2
+
+volumes:
+  dados_servidor1:
+  dados_servidor2:
