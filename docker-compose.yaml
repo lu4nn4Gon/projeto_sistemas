@@ -45,6 +45,36 @@ services:
       - servidor1
       - servidor2
 
+  bot3:
+    build: ./bot
+    container_name: bot3
+    environment:
+      BOT_NOME: Nelson
+      BOT_CANAL: top restuarantes
+    depends_on:
+      - servidor1
+      - servidor2
+
+  bot4:
+    build: ./bot
+    container_name: bot4
+    environment:
+      BOT_NOME: Masashi
+      BOT_CANAL: jogos pro pc
+    depends_on:
+      - servidor1
+      - servidor2
+
+  bot5:
+    build: ./bot
+    container_name: bot5
+    environment:
+      BOT_NOME: ""
+      BOT_CANAL: teste
+    depends_on:
+      - servidor1
+      - servidor2
+
 volumes:
   dados_servidor1:
   dados_servidor2:
