@@ -1,5 +1,4 @@
 services:
-
   broker:
     build: ./broker
     container_name: broker
@@ -8,6 +7,8 @@ services:
     build: ./servidor
     container_name: servidor1
     working_dir: /dados
+    environment:
+      SERVIDOR_PORTA: "8001"
     volumes:
       - dados_servidor1:/dados
     depends_on:
@@ -17,6 +18,8 @@ services:
     build: ./servidor
     container_name: servidor2
     working_dir: /dados
+    environment:
+      SERVIDOR_PORTA: "8002"
     volumes:
       - dados_servidor2:/dados
     depends_on:

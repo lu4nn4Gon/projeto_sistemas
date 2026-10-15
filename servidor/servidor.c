@@ -214,7 +214,11 @@ int main() {
     void *contexto = zmq_ctx_new();
     void *socket = zmq_socket(contexto, ZMQ_REP);
 
-    zmq_connect(socket, "tcp://broker:8001");
+    char endereco[100];
+
+    sprintf(endereco, "tcp://broker:%s", getenv("SERVIDOR_PORTA"));
+
+    zmq_connect(socket, endereco);
 
     printf("Servidor conectado ao broker\n");
     fflush(stdout);
