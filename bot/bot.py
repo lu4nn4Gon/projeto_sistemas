@@ -32,11 +32,6 @@ def enviar(tipo, nome=""):
     return resposta
 
 
-if nome.strip() == "":
-    print("Erro: nome vazio")
-    exit()
-
-
 # efetuando login
 while True:
     resposta = enviar("login", nome)
@@ -65,6 +60,8 @@ if canal.strip() != "":
     else:
         print(resposta["mensagem"])
 
+
+# mostra os canais atualizados
 resposta = enviar("listar_canais")
 
 if resposta["status"] == "sucesso":
