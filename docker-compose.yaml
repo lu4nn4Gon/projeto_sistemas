@@ -65,15 +65,7 @@ services:
       - servidor1
       - servidor2
 
-  bot5:
-    build: ./bot
-    container_name: bot5
-    environment:
-      BOT_NOME: ""
-      BOT_CANAL: teste
-    depends_on:
-      - servidor1
-      - servidor2
+
 
 volumes:
   dados_servidor1:

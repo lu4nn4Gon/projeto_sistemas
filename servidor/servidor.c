@@ -84,7 +84,9 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
 
         if (f != NULL) {
             while (fgets(linha, sizeof(linha), f)) {
-                quantidade++;
+             if (sscanf(linha, "%99[^;]", nome) == 1) {
+                  quantidade++;
+                }
             }
 
             rewind(f);

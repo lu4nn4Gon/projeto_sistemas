@@ -35,10 +35,18 @@ while True:
 
         if all(r["status"] == "sucesso" for r in respostas):
             resposta = respostas[0]
+
+        elif all(r["mensagem"] == "Canal já existe" for r in respostas):
+            resposta = {
+                "status": "erro",
+                "mensagem": "Canal já existe",
+                "timestamp": time.time()
+            }
+
         else:
             resposta = {
                 "status": "erro",
-                "mensagem": "Canal ja existe ou ocorreu um erro",
+                "mensagem": "Erro ao criar canal em um ou mais servidores",
                 "timestamp": time.time()
             }
 
