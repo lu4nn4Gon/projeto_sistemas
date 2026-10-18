@@ -1,4 +1,8 @@
 services:
+  proxy:
+    build: ./proxy
+    container_name: proxy
+
   broker:
     build: ./broker
     container_name: broker
@@ -64,8 +68,6 @@ services:
     depends_on:
       - servidor1
       - servidor2
-
-
 
 volumes:
   dados_servidor1:
