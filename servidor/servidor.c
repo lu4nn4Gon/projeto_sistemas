@@ -55,6 +55,58 @@ void texto(msgpack_packer *pk, const char *valor) {
     msgpack_pack_str_body(pk, valor, tamanho);
 }
 
+// salva publicacao 
+int salvar_publicacao(const char *canal, const char *mensagem, double timestamp) {
+    FILE *f = fopen("publicacoes.txt", "a");
+
+    if (f == NULL) {
+        return 0;
+    }
+
+    fprintf(f, "%.0f;%s;%s\n", timestamp, canal, mensagem);
+
+    int sucesso = !ferror(f);
+
+    if (fclose(f) != 0) {
+        sucesso = 0;
+    }
+
+    return sucesso;
+}
+
+// publica mensagem no proxy
+int publicar(void *publicador, const char *canal, const char *mensagem) {
+    msgpack_sbuffer buffer;
+    msgpack_packer pk;
+
+    msgpack_sbuffer_init(&buffer);
+    msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
+
+    msgpack_pack_map(&pk, 3);
+
+    texto(&pk, "canal");
+    texto(&pk, canal);
+
+    texto(&pk, "mensagem");
+    texto(&pk, mensagem);
+
+    texto(&pk, "timestamp");
+    msgpack_pack_double(&pk, obter_timestamp());
+
+    char topico[120];
+    snprintf(topico, sizeof(topico), "%s ", canal);
+
+    int resultado = zmq_send(publicador, topico, strlen(topico), ZMQ_SNDMORE);
+
+    if (resultado >= 0) {
+        resultado = zmq_send(publicador, buffer.data, buffer.size, 0);
+    }
+
+    msgpack_sbuffer_destroy(&buffer);
+
+    return resultado >= 0;
+}
+
 // resposta pro bot
 void responder(void *socket, const char *status, const char *mensagem, int listar) {
     msgpack_sbuffer buffer;
@@ -114,7 +166,7 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
 }
 
 // recebe/ processa as mensagens
-void processar(void *socket, char *dados, int tamanho) {
+void processar(void *socket, void *publicador, char *dados, int tamanho) {
     msgpack_unpacked resultado;
     msgpack_unpacked_init(&resultado);
 
@@ -126,6 +178,8 @@ void processar(void *socket, char *dados, int tamanho) {
 
     char tipo[50] = "";
     char nome[100] = "";
+    char canal[100] = "";
+    char mensagem[1024] = "";
     double timestamp = 0;
 
     msgpack_object objeto = resultado.data;
@@ -158,6 +212,22 @@ void processar(void *socket, char *dados, int tamanho) {
             valor.type == MSGPACK_OBJECT_STR) {
 
             snprintf(nome, sizeof(nome), "%.*s",
+                     (int)valor.via.str.size, valor.via.str.ptr);
+        }
+
+        if (chave.via.str.size == 5 &&
+            memcmp(chave.via.str.ptr, "canal", 5) == 0 &&
+            valor.type == MSGPACK_OBJECT_STR) {
+
+            snprintf(canal, sizeof(canal), "%.*s",
+                     (int)valor.via.str.size, valor.via.str.ptr);
+        }
+
+        if (chave.via.str.size == 8 &&
+            memcmp(chave.via.str.ptr, "mensagem", 8) == 0 &&
+            valor.type == MSGPACK_OBJECT_STR) {
+
+            snprintf(mensagem, sizeof(mensagem), "%.*s",
                      (int)valor.via.str.size, valor.via.str.ptr);
         }
 
@@ -205,6 +275,23 @@ void processar(void *socket, char *dados, int tamanho) {
     else if (strcmp(tipo, "listar_canais") == 0) {
         responder(socket, "sucesso", "Lista de canais", 1);
     }
+    else if (strcmp(tipo, "publicar") == 0) {
+        if (strlen(canal) == 0 || strlen(mensagem) == 0) {
+            responder(socket, "erro", "Canal ou mensagem vazia", 0);
+        }
+        else if (!canal_existe(canal)) {
+            responder(socket, "erro", "Canal nao existe", 0);
+        }
+        else if (!salvar_publicacao(canal, mensagem, timestamp)) {
+            responder(socket, "erro", "Erro ao salvar publicacao", 0);
+        }
+        else if (publicar(publicador, canal, mensagem)) {
+            responder(socket, "sucesso", "Mensagem publicada", 0);
+        }
+        else {
+            responder(socket, "erro", "Erro ao publicar mensagem", 0);
+        }
+    }
     else {
         responder(socket, "erro", "funcionalidade desconhecida", 0);
     }
@@ -215,12 +302,14 @@ void processar(void *socket, char *dados, int tamanho) {
 int main() {
     void *contexto = zmq_ctx_new();
     void *socket = zmq_socket(contexto, ZMQ_REP);
+    void *publicador = zmq_socket(contexto, ZMQ_PUB);
 
     char endereco[100];
 
     sprintf(endereco, "tcp://broker:%s", getenv("SERVIDOR_PORTA"));
 
     zmq_connect(socket, endereco);
+    zmq_connect(publicador, "tcp://proxy:5557");
 
     printf("Servidor conectado ao broker\n");
     fflush(stdout);
@@ -232,12 +321,13 @@ int main() {
         int tamanho = zmq_msg_recv(&mensagem, socket, 0);
 
         if (tamanho >= 0) {
-            processar(socket, zmq_msg_data(&mensagem), tamanho);
+            processar(socket, publicador, zmq_msg_data(&mensagem), tamanho);
         }
 
         zmq_msg_close(&mensagem);
     }
 
+    zmq_close(publicador);
     zmq_close(socket);
     zmq_ctx_destroy(contexto);
 

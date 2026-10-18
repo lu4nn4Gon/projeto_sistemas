@@ -17,6 +17,7 @@ services:
       - dados_servidor1:/dados
     depends_on:
       - broker
+      - proxy
 
   servidor2:
     build: ./servidor
@@ -28,6 +29,7 @@ services:
       - dados_servidor2:/dados
     depends_on:
       - broker
+      - proxy
 
   bot1:
     build: ./bot
