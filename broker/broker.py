@@ -16,6 +16,7 @@ servidor2 = context.socket(zmq.REQ)
 servidor2.bind("tcp://*:8002")
 
 servidores = [servidor1, servidor2]
+proximo_servidor = 0
 
 print("Broker iniciado", flush=True)
 
@@ -64,6 +65,14 @@ while True:
             "timestamp": time.time(),
             "canais": sorted(canais)
         }
+
+    elif tipo == "publicar":
+        servidor = servidores[proximo_servidor]
+
+        servidor.send(mensagem)
+        resposta = msgpack.unpackb(servidor.recv(), raw=False)
+
+        proximo_servidor = (proximo_servidor + 1) % len(servidores)
 
     else:
         servidor1.send(mensagem)
