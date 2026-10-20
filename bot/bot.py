@@ -3,13 +3,14 @@ import msgpack
 import time
 import os
 import random
+import threading
 
 nome = os.getenv("BOT_NOME", "Luanna")
 canal = os.getenv("BOT_CANAL", "geral")
 
 contexto = zmq.Context()
 
-#REQ/REP com o broker
+#req/rep com o broker
 socket = contexto.socket(zmq.REQ)
 socket.connect("tcp://broker:8000")
 
@@ -19,17 +20,21 @@ assinante.connect("tcp://proxy:5558")
 
 
 # enviando mensagem ao broker
-def enviar(tipo, nome=""):
-    mensagem = {
+def enviar(tipo, nome="", canal="", mensagem=""):
+    dados_mensagem = {
         "tipo": tipo,
         "nome": nome,
         "timestamp": time.time()
     }
 
-    dados = msgpack.packb(mensagem)
+    if tipo == "publicar":
+        dados_mensagem["canal"] = canal
+        dados_mensagem["mensagem"] = mensagem
+
+    dados = msgpack.packb(dados_mensagem)
     socket.send(dados)
 
-    print(f"Bot enviou: {mensagem}", flush=True)
+    print(f"Bot enviou: {dados_mensagem}", flush=True)
 
     resposta_bytes = socket.recv()
     resposta = msgpack.unpackb(resposta_bytes, raw=False)
@@ -37,6 +42,30 @@ def enviar(tipo, nome=""):
     print(f"Bot recebeu: {resposta}", flush=True)
 
     return resposta
+
+
+def receber_mensagens():
+    while True:
+        try:
+            partes = assinante.recv_multipart()
+
+            if len(partes) != 2:
+                print("Publicação em formato inesperado", flush=True)
+                continue
+
+            topico, dados = partes
+            mensagem = msgpack.unpackb(dados, raw=False)
+
+            print(
+                f"[{topico.decode().strip()}] "
+                f"{mensagem.get('mensagem')} | "
+                f"Enviada: {mensagem.get('timestamp')} | "
+                f"Recebida: {time.time()}",
+                flush=True
+            )
+
+        except zmq.ZMQError:
+            break
 
 
 # efetuando login
@@ -54,12 +83,15 @@ while True:
 # mostrando os canais existentes
 resposta = enviar("listar_canais")
 
+canais = []
+
 if resposta["status"] == "sucesso":
-    print("Canais existentes:", resposta.get("canais", []), flush=True)
+    canais = resposta.get("canais", [])
+    print("Canais existentes:", canais, flush=True)
 
 
 # criando um canal
-if canal.strip() != "":
+if len(canais) < 5 and canal.strip() != "":
     resposta = enviar("criar_canal", canal)
 
     if resposta["status"] == "sucesso":
@@ -70,8 +102,6 @@ if canal.strip() != "":
 
 # mostra os canais atualizados
 resposta = enviar("listar_canais")
-
-canais = []
 
 if resposta["status"] == "sucesso":
     canais = resposta.get("canais", [])
@@ -91,24 +121,45 @@ for nome_canal in inscricoes:
 # aguardando publicações
 print(f"{nome} aguardando mensagens...", flush=True)
 
+thread = threading.Thread(target=receber_mensagens, daemon=True)
+thread.start()
+
+mensagens = [
+    "Ola pessoal!",
+    "Tudo bem?",
+    "Bom dia!",
+    "Alguem por aqui?",
+    "Testando o canal",
+    "Mensagem automatica",
+    "Sistemas distribuidos",
+    "Mais uma mensagem",
+    "Teste de publicacao",
+    "Ate a proxima!"
+]
+
 try:
     while True:
-        partes = assinante.recv_multipart()
-
-        if len(partes) != 2:
-            print("Publicação em formato inesperado", flush=True)
+        if not canais:
+            time.sleep(1)
             continue
 
-        topico, dados = partes
-        mensagem = msgpack.unpackb(dados, raw=False)
+        canal_escolhido = random.choice(canais)
 
-        print(
-            f"[{topico.decode().strip()}] "
-            f"{mensagem.get('mensagem')} | "
-            f"Enviada: {mensagem.get('timestamp')} | "
-            f"Recebida: {time.time()}",
-            flush=True
-        )
+        print(f"{nome} vai publicar no canal: {canal_escolhido}", flush=True)
+
+        for i in range(10):
+            mensagem = random.choice(mensagens)
+
+            resposta = enviar(
+                "publicar",
+                canal=canal_escolhido,
+                mensagem=mensagem
+            )
+
+            if resposta["status"] != "sucesso":
+                print("Erro ao publicar mensagem", flush=True)
+
+            time.sleep(1)
 
 except KeyboardInterrupt:
     print(f"{nome} encerrando...", flush=True)
