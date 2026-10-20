@@ -7,6 +7,10 @@ services:
     build: ./broker
     container_name: broker
 
+  referencia:
+    build: ./referencia
+    container_name: referencia
+
   servidor1:
     build: ./servidor
     container_name: servidor1
@@ -18,6 +22,7 @@ services:
     depends_on:
       - broker
       - proxy
+      - referencia
 
   servidor2:
     build: ./servidor
@@ -30,6 +35,7 @@ services:
     depends_on:
       - broker
       - proxy
+      - referencia
 
   bot1:
     build: ./bot
