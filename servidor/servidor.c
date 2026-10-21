@@ -5,8 +5,21 @@
 #include <zmq.h>
 #include <msgpack.h>
 
+int relogio_logico = 0;
+
 double obter_timestamp() {
     return (double)time(NULL);
+}
+
+void atualizar_relogio(int recebido) {
+    if (recebido > relogio_logico) {
+        relogio_logico = recebido;
+    }
+}
+
+int incrementar_relogio() {
+    relogio_logico++;
+    return relogio_logico;
 }
 
 // Salva login/canal no arquivo
@@ -55,7 +68,7 @@ void texto(msgpack_packer *pk, const char *valor) {
     msgpack_pack_str_body(pk, valor, tamanho);
 }
 
-// salva publicacao 
+// salva publicacao
 int salvar_publicacao(const char *canal, const char *mensagem, double timestamp) {
     FILE *f = fopen("publicacoes.txt", "a");
 
@@ -82,7 +95,7 @@ int publicar(void *publicador, const char *canal, const char *mensagem) {
     msgpack_sbuffer_init(&buffer);
     msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
 
-    msgpack_pack_map(&pk, 3);
+    msgpack_pack_map(&pk, 4);
 
     texto(&pk, "canal");
     texto(&pk, canal);
@@ -92,6 +105,9 @@ int publicar(void *publicador, const char *canal, const char *mensagem) {
 
     texto(&pk, "timestamp");
     msgpack_pack_double(&pk, obter_timestamp());
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
 
     char topico[120];
     snprintf(topico, sizeof(topico), "%s ", canal);
@@ -115,7 +131,7 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
     msgpack_sbuffer_init(&buffer);
     msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
 
-    msgpack_pack_map(&pk, listar ? 4 : 3);
+    msgpack_pack_map(&pk, listar ? 5 : 4);
 
     texto(&pk, "status");
     texto(&pk, status);
@@ -125,6 +141,9 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
 
     texto(&pk, "timestamp");
     msgpack_pack_double(&pk, obter_timestamp());
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
 
     if (listar) {
         texto(&pk, "canais");
@@ -136,8 +155,8 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
 
         if (f != NULL) {
             while (fgets(linha, sizeof(linha), f)) {
-             if (sscanf(linha, "%99[^;]", nome) == 1) {
-                  quantidade++;
+                if (sscanf(linha, "%99[^;]", nome) == 1) {
+                    quantidade++;
                 }
             }
 
@@ -157,7 +176,8 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
         }
     }
 
-    printf("Servidor enviou: %s - %s\n", status, mensagem);
+    printf("Servidor enviou: %s - %s | Relogio: %d\n",
+           status, mensagem, relogio_logico);
     fflush(stdout);
 
     zmq_send(socket, buffer.data, buffer.size, 0);
@@ -181,6 +201,7 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
     char canal[100] = "";
     char mensagem[1024] = "";
     double timestamp = 0;
+    int contador_recebido = 0;
 
     msgpack_object objeto = resultado.data;
 
@@ -190,7 +211,6 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
         return;
     }
 
-    
     for (int i = 0; i < objeto.via.map.size; i++) {
         msgpack_object chave = objeto.via.map.ptr[i].key;
         msgpack_object valor = objeto.via.map.ptr[i].val;
@@ -238,9 +258,20 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
 
             timestamp = valor.via.f64;
         }
+
+        if (chave.via.str.size == 14 &&
+            memcmp(chave.via.str.ptr, "relogio_logico", 14) == 0 &&
+            (valor.type == MSGPACK_OBJECT_POSITIVE_INTEGER ||
+             valor.type == MSGPACK_OBJECT_NEGATIVE_INTEGER)) {
+
+            contador_recebido = (int)valor.via.u64;
+        }
     }
 
-    printf("Servidor recebeu: %s - %s\n", tipo, nome);
+    atualizar_relogio(contador_recebido);
+
+    printf("Servidor recebeu: %s - %s | Relogio: %d\n",
+           tipo, nome, relogio_logico);
     fflush(stdout);
 
     //decisoes
