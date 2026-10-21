@@ -68,6 +68,171 @@ void texto(msgpack_packer *pk, const char *valor) {
     msgpack_pack_str_body(pk, valor, tamanho);
 }
 
+int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
+    void *socket = zmq_socket(contexto, ZMQ_REQ);
+
+    if (socket == NULL) {
+        return 0;
+    }
+
+    int timeout = 2000;
+    int linger = 0;
+
+    zmq_setsockopt(socket, ZMQ_RCVTIMEO, &timeout, sizeof(timeout));
+    zmq_setsockopt(socket, ZMQ_SNDTIMEO, &timeout, sizeof(timeout));
+    zmq_setsockopt(socket, ZMQ_LINGER, &linger, sizeof(linger));
+
+    zmq_connect(socket, "tcp://referencia:6000");
+
+    msgpack_sbuffer buffer;
+    msgpack_packer pk;
+
+    msgpack_sbuffer_init(&buffer);
+    msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
+
+    msgpack_pack_map(&pk, 2);
+
+    texto(&pk, "tipo");
+    texto(&pk, tipo);
+
+    texto(&pk, "nome");
+    texto(&pk, nome);
+
+    if (zmq_send(socket, buffer.data, buffer.size, 0) < 0) {
+        msgpack_sbuffer_destroy(&buffer);
+        zmq_close(socket);
+        return 0;
+    }
+
+    msgpack_sbuffer_destroy(&buffer);
+
+    zmq_msg_t resposta;
+    zmq_msg_init(&resposta);
+
+    int tamanho = zmq_msg_recv(&resposta, socket, 0);
+
+    if (tamanho < 0) {
+        zmq_msg_close(&resposta);
+        zmq_close(socket);
+        return 0;
+    }
+
+    msgpack_unpacked resultado;
+    msgpack_unpacked_init(&resultado);
+
+    size_t offset = 0;
+
+    if (!msgpack_unpack_next(
+            &resultado,
+            zmq_msg_data(&resposta),
+            (size_t)tamanho,
+            &offset)) {
+
+        msgpack_unpacked_destroy(&resultado);
+        zmq_msg_close(&resposta);
+        zmq_close(socket);
+        return 0;
+    }
+
+    msgpack_object objeto = resultado.data;
+
+    int rank = 0;
+    int sucesso = 0;
+
+    if (objeto.type == MSGPACK_OBJECT_MAP) {
+        for (int i = 0; i < objeto.via.map.size; i++) {
+            msgpack_object chave = objeto.via.map.ptr[i].key;
+            msgpack_object valor = objeto.via.map.ptr[i].val;
+
+            if (chave.type != MSGPACK_OBJECT_STR) {
+                continue;
+            }
+
+            if (chave.via.str.size == 6 &&
+                memcmp(chave.via.str.ptr, "status", 6) == 0 &&
+                valor.type == MSGPACK_OBJECT_STR) {
+
+                if (valor.via.str.size == 7 &&
+                    memcmp(valor.via.str.ptr, "sucesso", 7) == 0) {
+                    sucesso = 1;
+                }
+            }
+
+            if (chave.via.str.size == 4 &&
+                memcmp(chave.via.str.ptr, "rank", 4) == 0 &&
+                valor.type == MSGPACK_OBJECT_POSITIVE_INTEGER) {
+
+                rank = (int)valor.via.u64;
+            }
+
+            if (chave.via.str.size == 10 &&
+                memcmp(chave.via.str.ptr, "servidores", 10) == 0 &&
+                valor.type == MSGPACK_OBJECT_ARRAY) {
+
+                printf("Servidores cadastrados:\n");
+
+                for (int j = 0; j < valor.via.array.size; j++) {
+                    msgpack_object servidor = valor.via.array.ptr[j];
+
+                    if (servidor.type != MSGPACK_OBJECT_MAP) {
+                        continue;
+                    }
+
+                    char nome_servidor[100] = "";
+                    int rank_servidor = 0;
+
+                    for (int k = 0; k < servidor.via.map.size; k++) {
+                        msgpack_object campo = servidor.via.map.ptr[k].key;
+                        msgpack_object dado = servidor.via.map.ptr[k].val;
+
+                        if (campo.type != MSGPACK_OBJECT_STR) {
+                            continue;
+                        }
+
+                        if (campo.via.str.size == 4 &&
+                            memcmp(campo.via.str.ptr, "nome", 4) == 0 &&
+                            dado.type == MSGPACK_OBJECT_STR) {
+
+                            snprintf(
+                                nome_servidor,
+                                sizeof(nome_servidor),
+                                "%.*s",
+                                (int)dado.via.str.size,
+                                dado.via.str.ptr
+                            );
+                        }
+
+                        if (campo.via.str.size == 4 &&
+                            memcmp(campo.via.str.ptr, "rank", 4) == 0 &&
+                            dado.type == MSGPACK_OBJECT_POSITIVE_INTEGER) {
+
+                            rank_servidor = (int)dado.via.u64;
+                        }
+                    }
+
+                    printf("  %s - rank %d\n", nome_servidor, rank_servidor);
+                }
+
+                fflush(stdout);
+            }
+        }
+    }
+
+    msgpack_unpacked_destroy(&resultado);
+    zmq_msg_close(&resposta);
+    zmq_close(socket);
+
+    if (!sucesso) {
+        return 0;
+    }
+
+    if (strcmp(tipo, "rank") == 0) {
+        return rank;
+    }
+
+    return 1;
+}
+
 // salva publicacao
 int salvar_publicacao(const char *canal, const char *mensagem, double timestamp) {
     FILE *f = fopen("publicacoes.txt", "a");
@@ -334,6 +499,29 @@ int main() {
     void *contexto = zmq_ctx_new();
     void *socket = zmq_socket(contexto, ZMQ_REP);
     void *publicador = zmq_socket(contexto, ZMQ_PUB);
+
+    const char *nome_servidor = getenv("SERVIDOR_NOME");
+
+    if (nome_servidor == NULL || strlen(nome_servidor) == 0) {
+        nome_servidor = "servidor";
+    }
+
+    int rank = 0;
+
+    while (rank == 0) {
+        rank = consultar_referencia(contexto, "rank", nome_servidor);
+
+        if (rank == 0) {
+            printf("Aguardando servico de referencia...\n");
+            fflush(stdout);
+            sleep(2);
+        }
+    }
+
+    printf("%s cadastrado com rank %d\n", nome_servidor, rank);
+    fflush(stdout);
+
+    consultar_referencia(contexto, "listar", nome_servidor);
 
     char endereco[100];
 

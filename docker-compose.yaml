@@ -16,6 +16,7 @@ services:
     container_name: servidor1
     working_dir: /dados
     environment:
+      SERVIDOR_NOME: "servidor1"
       SERVIDOR_PORTA: "8001"
     volumes:
       - dados_servidor1:/dados
@@ -29,6 +30,7 @@ services:
     container_name: servidor2
     working_dir: /dados
     environment:
+      SERVIDOR_NOME: "servidor2"
       SERVIDOR_PORTA: "8002"
     volumes:
       - dados_servidor2:/dados
