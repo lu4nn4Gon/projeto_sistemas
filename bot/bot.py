@@ -10,6 +10,26 @@ canal = os.getenv("BOT_CANAL", "geral")
 
 contexto = zmq.Context()
 
+relogio_logico = 0
+trava_relogio = threading.Lock()
+
+
+def incrementar_relogio():
+    global relogio_logico
+
+    with trava_relogio:
+        relogio_logico += 1
+        return relogio_logico
+
+
+def atualizar_relogio(valor_recebido):
+    global relogio_logico
+
+    with trava_relogio:
+        relogio_logico = max(relogio_logico, valor_recebido)
+        return relogio_logico
+
+
 #req/rep com o broker
 socket = contexto.socket(zmq.REQ)
 socket.connect("tcp://broker:8000")
@@ -21,10 +41,13 @@ assinante.connect("tcp://proxy:5558")
 
 # enviando mensagem ao broker
 def enviar(tipo, nome="", canal="", mensagem=""):
+    contador = incrementar_relogio()
+
     dados_mensagem = {
         "tipo": tipo,
         "nome": nome,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "relogio_logico": contador
     }
 
     if tipo == "publicar":
@@ -39,7 +62,10 @@ def enviar(tipo, nome="", canal="", mensagem=""):
     resposta_bytes = socket.recv()
     resposta = msgpack.unpackb(resposta_bytes, raw=False)
 
+    atualizar_relogio(resposta.get("relogio_logico", 0))
+
     print(f"Bot recebeu: {resposta}", flush=True)
+    print(f"Relogio logico atual: {relogio_logico}", flush=True)
 
     return resposta
 
@@ -56,11 +82,14 @@ def receber_mensagens():
             topico, dados = partes
             mensagem = msgpack.unpackb(dados, raw=False)
 
+            atualizar_relogio(mensagem.get("relogio_logico", 0))
+
             print(
                 f"[{topico.decode().strip()}] "
                 f"{mensagem.get('mensagem')} | "
                 f"Enviada: {mensagem.get('timestamp')} | "
-                f"Recebida: {time.time()}",
+                f"Recebida: {time.time()} | "
+                f"Relogio logico: {relogio_logico}",
                 flush=True
             )
 
