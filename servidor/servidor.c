@@ -6,6 +6,7 @@
 #include <msgpack.h>
 
 int relogio_logico = 0;
+int mensagens_recebidas = 0;
 
 double obter_timestamp() {
     return (double)time(NULL);
@@ -541,6 +542,31 @@ int main() {
 
         if (tamanho >= 0) {
             processar(socket, publicador, zmq_msg_data(&mensagem), tamanho);
+
+            mensagens_recebidas++;
+
+            if (mensagens_recebidas % 10 == 0) {
+                int resposta = consultar_referencia(
+                    contexto,
+                    "heartbeat",
+                    nome_servidor
+                );
+
+                if (resposta == 1) {
+                    printf(
+                        "%s enviou heartbeat apos %d mensagens - OK\n",
+                        nome_servidor,
+                        mensagens_recebidas
+                    );
+                } else {
+                    printf(
+                        "%s nao conseguiu enviar heartbeat\n",
+                        nome_servidor
+                    );
+                }
+
+                fflush(stdout);
+            }
         }
 
         zmq_msg_close(&mensagem);
