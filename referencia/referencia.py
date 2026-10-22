@@ -15,6 +15,16 @@ TEMPO_LIMITE = 30
 print("Servico de referencia iniciado na porta 6000", flush=True)
 
 while True:
+    agora = time.time()
+
+    for nome_servidor, dados_servidor in list(servidores.items()):
+        if agora - dados_servidor["ultimo_heartbeat"] > TEMPO_LIMITE:
+            print(
+                f"Servidor {nome_servidor} removido por falta de heartbeat",
+                flush=True
+            )
+            del servidores[nome_servidor]
+
     if socket.poll(1000) == 0:
         continue
 
@@ -77,13 +87,3 @@ while True:
         }
 
     socket.send(msgpack.packb(resposta))
-
-    agora = time.time()
-
-    for nome_servidor, dados_servidor in list(servidores.items()):
-        if agora - dados_servidor["ultimo_heartbeat"] > TEMPO_LIMITE:
-            print(
-                f"Servidor {nome_servidor} removido por falta de heartbeat",
-                flush=True
-            )
-            del servidores[nome_servidor]

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <zmq.h>
 #include <msgpack.h>
 
@@ -560,9 +561,30 @@ int main() {
                     );
                 } else {
                     printf(
-                        "%s nao conseguiu enviar heartbeat\n",
+                        "%s nao conseguiu enviar heartbeat. Tentando recadastro...\n",
                         nome_servidor
                     );
+
+                    int novo_rank = consultar_referencia(
+                        contexto,
+                        "rank",
+                        nome_servidor
+                    );
+
+                    if (novo_rank > 0) {
+                        rank = novo_rank;
+
+                        printf(
+                            "%s recadastrado com rank %d\n",
+                            nome_servidor,
+                            rank
+                        );
+                    } else {
+                        printf(
+                            "%s nao conseguiu se recadastrar\n",
+                            nome_servidor
+                        );
+                    }
                 }
 
                 fflush(stdout);
