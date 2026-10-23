@@ -8,17 +8,21 @@
 
 int relogio_logico = 0;
 int mensagens_recebidas = 0;
+double diferenca_relogio = 0;
 
+// pega o horario do servidor
 double obter_timestamp() {
-    return (double)time(NULL);
+    return (double)time(NULL) + diferenca_relogio;
 }
 
+// atualiza o relogio logico
 void atualizar_relogio(int recebido) {
     if (recebido > relogio_logico) {
         relogio_logico = recebido;
     }
 }
 
+// incrementa o relogio logico
 int incrementar_relogio() {
     relogio_logico++;
     return relogio_logico;
@@ -70,6 +74,7 @@ void texto(msgpack_packer *pk, const char *valor) {
     msgpack_pack_str_body(pk, valor, tamanho);
 }
 
+// consulta o servico de referencia
 int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     void *socket = zmq_socket(contexto, ZMQ_REQ);
 
@@ -92,6 +97,7 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     msgpack_sbuffer_init(&buffer);
     msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
 
+    // monta a mensagem
     msgpack_pack_map(&pk, 2);
 
     texto(&pk, "tipo");
@@ -100,6 +106,7 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     texto(&pk, "nome");
     texto(&pk, nome);
 
+    // envia para a referencia
     if (zmq_send(socket, buffer.data, buffer.size, 0) < 0) {
         msgpack_sbuffer_destroy(&buffer);
         zmq_close(socket);
@@ -108,6 +115,7 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
 
     msgpack_sbuffer_destroy(&buffer);
 
+    // recebe a resposta
     zmq_msg_t resposta;
     zmq_msg_init(&resposta);
 
@@ -140,7 +148,9 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
 
     int rank = 0;
     int sucesso = 0;
+    double timestamp_referencia = 0;
 
+    // le os dados da resposta
     if (objeto.type == MSGPACK_OBJECT_MAP) {
         for (int i = 0; i < objeto.via.map.size; i++) {
             msgpack_object chave = objeto.via.map.ptr[i].key;
@@ -167,6 +177,16 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
                 rank = (int)valor.via.u64;
             }
 
+            // pega o horario da referencia
+            if (chave.via.str.size == 9 &&
+                memcmp(chave.via.str.ptr, "timestamp", 9) == 0 &&
+                (valor.type == MSGPACK_OBJECT_FLOAT64 ||
+                 valor.type == MSGPACK_OBJECT_FLOAT32)) {
+
+                timestamp_referencia = valor.via.f64;
+            }
+
+            // lista os servidores cadastrados
             if (chave.via.str.size == 10 &&
                 memcmp(chave.via.str.ptr, "servidores", 10) == 0 &&
                 valor.type == MSGPACK_OBJECT_ARRAY) {
@@ -226,6 +246,21 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
 
     if (!sucesso) {
         return 0;
+    }
+
+    // sincroniza o horario com a referencia
+    if (timestamp_referencia > 0) {
+        double horario_local = (double)time(NULL);
+
+        diferenca_relogio = timestamp_referencia - horario_local;
+
+        printf(
+            "%s sincronizou o relogio fisico | Diferenca: %.2f segundos\n",
+            nome,
+            diferenca_relogio
+        );
+
+        fflush(stdout);
     }
 
     if (strcmp(tipo, "rank") == 0) {
@@ -378,6 +413,7 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
         return;
     }
 
+    // le os dados recebidos
     for (int i = 0; i < objeto.via.map.size; i++) {
         msgpack_object chave = objeto.via.map.ptr[i].key;
         msgpack_object valor = objeto.via.map.ptr[i].val;
@@ -508,6 +544,7 @@ int main() {
         nome_servidor = "servidor";
     }
 
+    // cadastra o servidor na referencia
     int rank = 0;
 
     while (rank == 0) {
@@ -523,6 +560,7 @@ int main() {
     printf("%s cadastrado com rank %d\n", nome_servidor, rank);
     fflush(stdout);
 
+    // lista os servidores cadastrados
     consultar_referencia(contexto, "listar", nome_servidor);
 
     char endereco[100];
@@ -535,6 +573,7 @@ int main() {
     printf("Servidor conectado ao broker\n");
     fflush(stdout);
 
+    // recebe as mensagens do broker
     while (1) {
         zmq_msg_t mensagem;
         zmq_msg_init(&mensagem);
@@ -546,6 +585,7 @@ int main() {
 
             mensagens_recebidas++;
 
+            // envia heartbeat a cada 10 mensagens
             if (mensagens_recebidas % 10 == 0) {
                 int resposta = consultar_referencia(
                     contexto,
@@ -565,6 +605,7 @@ int main() {
                         nome_servidor
                     );
 
+                    // tenta cadastrar novamente
                     int novo_rank = consultar_referencia(
                         contexto,
                         "rank",
