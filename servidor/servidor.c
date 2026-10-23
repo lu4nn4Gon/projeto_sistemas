@@ -98,13 +98,20 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
 
     // monta a mensagem
-    msgpack_pack_map(&pk, 2);
+    msgpack_pack_map(&pk, 4);
 
     texto(&pk, "tipo");
     texto(&pk, tipo);
 
     texto(&pk, "nome");
     texto(&pk, nome);
+
+    // envia o horario e o relogio logico
+    texto(&pk, "timestamp");
+    msgpack_pack_double(&pk, obter_timestamp());
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
 
     // envia para a referencia
     if (zmq_send(socket, buffer.data, buffer.size, 0) < 0) {
@@ -148,6 +155,7 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
 
     int rank = 0;
     int sucesso = 0;
+    int contador_recebido = 0;
     double timestamp_referencia = 0;
 
     // le os dados da resposta
@@ -184,6 +192,15 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
                  valor.type == MSGPACK_OBJECT_FLOAT32)) {
 
                 timestamp_referencia = valor.via.f64;
+            }
+
+            // pega o relogio logico da referencia
+            if (chave.via.str.size == 14 &&
+                memcmp(chave.via.str.ptr, "relogio_logico", 14) == 0 &&
+                (valor.type == MSGPACK_OBJECT_POSITIVE_INTEGER ||
+                 valor.type == MSGPACK_OBJECT_NEGATIVE_INTEGER)) {
+
+                contador_recebido = (int)valor.via.u64;
             }
 
             // lista os servidores cadastrados
@@ -239,6 +256,9 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
             }
         }
     }
+
+    // atualiza o relogio logico
+    atualizar_relogio(contador_recebido);
 
     msgpack_unpacked_destroy(&resultado);
     zmq_msg_close(&resposta);

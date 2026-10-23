@@ -12,6 +12,9 @@ proximo_rank = 1
 
 TEMPO_LIMITE = 30
 
+# relogio logico da referencia
+relogio_logico = 0
+
 print("Servico de referencia iniciado na porta 6000", flush=True)
 
 while True:
@@ -30,6 +33,10 @@ while True:
 
     dados = socket.recv()
     mensagem = msgpack.unpackb(dados, raw=False)
+
+    # atualiza o relogio logico
+    contador_recebido = mensagem.get("relogio_logico", 0)
+    relogio_logico = max(relogio_logico, contador_recebido)
 
     tipo = mensagem.get("tipo")
     nome = mensagem.get("nome")
@@ -85,5 +92,9 @@ while True:
             "mensagem": "Tipo de mensagem desconhecido",
             "timestamp": time.time()
         }
+
+    # incrementa o relogio antes de enviar
+    relogio_logico += 1
+    resposta["relogio_logico"] = relogio_logico
 
     socket.send(msgpack.packb(resposta))
