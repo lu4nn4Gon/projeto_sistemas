@@ -28,7 +28,7 @@ int incrementar_relogio() {
     return relogio_logico;
 }
 
-// Salva login/canal no arquivo
+// salva login/canal no arquivo
 int salvar(const char *arquivo, const char *nome, double timestamp) {
     FILE *f = fopen(arquivo, "a");
 
@@ -42,7 +42,7 @@ int salvar(const char *arquivo, const char *nome, double timestamp) {
     return 1;
 }
 
-// Verifica se o canal ja existe
+// verifica se o canal ja existe
 int canal_existe(const char *nome) {
     FILE *f = fopen("canais.txt", "r");
 
@@ -66,7 +66,7 @@ int canal_existe(const char *nome) {
     return 0;
 }
 
-//texto no MessagePack
+// texto no MessagePack
 void texto(msgpack_packer *pk, const char *valor) {
     int tamanho = strlen(valor);
 
@@ -97,7 +97,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     msgpack_sbuffer_init(&buffer);
     msgpack_packer_init(&pk, &buffer, msgpack_sbuffer_write);
 
-    // monta a mensagem
     msgpack_pack_map(&pk, 4);
 
     texto(&pk, "tipo");
@@ -106,14 +105,12 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     texto(&pk, "nome");
     texto(&pk, nome);
 
-    // envia o horario e o relogio logico
     texto(&pk, "timestamp");
     msgpack_pack_double(&pk, obter_timestamp());
 
     texto(&pk, "relogio_logico");
     msgpack_pack_int(&pk, incrementar_relogio());
 
-    // envia para a referencia
     if (zmq_send(socket, buffer.data, buffer.size, 0) < 0) {
         msgpack_sbuffer_destroy(&buffer);
         zmq_close(socket);
@@ -122,7 +119,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
 
     msgpack_sbuffer_destroy(&buffer);
 
-    // recebe a resposta
     zmq_msg_t resposta;
     zmq_msg_init(&resposta);
 
@@ -158,7 +154,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
     int contador_recebido = 0;
     double timestamp_referencia = 0;
 
-    // le os dados da resposta
     if (objeto.type == MSGPACK_OBJECT_MAP) {
         for (int i = 0; i < objeto.via.map.size; i++) {
             msgpack_object chave = objeto.via.map.ptr[i].key;
@@ -185,7 +180,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
                 rank = (int)valor.via.u64;
             }
 
-            // pega o horario da referencia
             if (chave.via.str.size == 9 &&
                 memcmp(chave.via.str.ptr, "timestamp", 9) == 0 &&
                 (valor.type == MSGPACK_OBJECT_FLOAT64 ||
@@ -194,7 +188,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
                 timestamp_referencia = valor.via.f64;
             }
 
-            // pega o relogio logico da referencia
             if (chave.via.str.size == 14 &&
                 memcmp(chave.via.str.ptr, "relogio_logico", 14) == 0 &&
                 (valor.type == MSGPACK_OBJECT_POSITIVE_INTEGER ||
@@ -203,7 +196,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
                 contador_recebido = (int)valor.via.u64;
             }
 
-            // lista os servidores cadastrados
             if (chave.via.str.size == 10 &&
                 memcmp(chave.via.str.ptr, "servidores", 10) == 0 &&
                 valor.type == MSGPACK_OBJECT_ARRAY) {
@@ -257,7 +249,6 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
         }
     }
 
-    // atualiza o relogio logico
     atualizar_relogio(contador_recebido);
 
     msgpack_unpacked_destroy(&resultado);
@@ -268,7 +259,8 @@ int consultar_referencia(void *contexto, const char *tipo, const char *nome) {
         return 0;
     }
 
-    // sincroniza o horario com a referencia
+    // mantido temporariamente da Parte 3
+    // na Parte 4 a sincronizacao sera feita pelo coordenador
     if (timestamp_referencia > 0) {
         double horario_local = (double)time(NULL);
 
@@ -345,7 +337,7 @@ int publicar(void *publicador, const char *canal, const char *mensagem) {
     return resultado >= 0;
 }
 
-// resposta pro bot
+// resposta para o bot
 void responder(void *socket, const char *status, const char *mensagem, int listar) {
     msgpack_sbuffer buffer;
     msgpack_packer pk;
@@ -398,8 +390,13 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
         }
     }
 
-    printf("Servidor enviou: %s - %s | Relogio: %d\n",
-           status, mensagem, relogio_logico);
+    printf(
+        "Servidor enviou: %s - %s | Relogio: %d\n",
+        status,
+        mensagem,
+        relogio_logico
+    );
+
     fflush(stdout);
 
     zmq_send(socket, buffer.data, buffer.size, 0);
@@ -407,12 +404,14 @@ void responder(void *socket, const char *status, const char *mensagem, int lista
     msgpack_sbuffer_destroy(&buffer);
 }
 
-// recebe/ processa as mensagens
+// recebe e processa mensagens dos bots
 void processar(void *socket, void *publicador, char *dados, int tamanho) {
     msgpack_unpacked resultado;
     msgpack_unpacked_init(&resultado);
 
-    if (!msgpack_unpack_next(&resultado, dados, tamanho, NULL)) {
+    size_t offset = 0;
+
+    if (!msgpack_unpack_next(&resultado, dados, tamanho, &offset)) {
         responder(socket, "erro", "Mensagem invalida", 0);
         msgpack_unpacked_destroy(&resultado);
         return;
@@ -433,7 +432,6 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
         return;
     }
 
-    // le os dados recebidos
     for (int i = 0; i < objeto.via.map.size; i++) {
         msgpack_object chave = objeto.via.map.ptr[i].key;
         msgpack_object valor = objeto.via.map.ptr[i].val;
@@ -446,32 +444,52 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
             memcmp(chave.via.str.ptr, "tipo", 4) == 0 &&
             valor.type == MSGPACK_OBJECT_STR) {
 
-            snprintf(tipo, sizeof(tipo), "%.*s",
-                     (int)valor.via.str.size, valor.via.str.ptr);
+            snprintf(
+                tipo,
+                sizeof(tipo),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
         }
 
         if (chave.via.str.size == 4 &&
             memcmp(chave.via.str.ptr, "nome", 4) == 0 &&
             valor.type == MSGPACK_OBJECT_STR) {
 
-            snprintf(nome, sizeof(nome), "%.*s",
-                     (int)valor.via.str.size, valor.via.str.ptr);
+            snprintf(
+                nome,
+                sizeof(nome),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
         }
 
         if (chave.via.str.size == 5 &&
             memcmp(chave.via.str.ptr, "canal", 5) == 0 &&
             valor.type == MSGPACK_OBJECT_STR) {
 
-            snprintf(canal, sizeof(canal), "%.*s",
-                     (int)valor.via.str.size, valor.via.str.ptr);
+            snprintf(
+                canal,
+                sizeof(canal),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
         }
 
         if (chave.via.str.size == 8 &&
             memcmp(chave.via.str.ptr, "mensagem", 8) == 0 &&
             valor.type == MSGPACK_OBJECT_STR) {
 
-            snprintf(mensagem, sizeof(mensagem), "%.*s",
-                     (int)valor.via.str.size, valor.via.str.ptr);
+            snprintf(
+                mensagem,
+                sizeof(mensagem),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
         }
 
         if (chave.via.str.size == 9 &&
@@ -493,11 +511,15 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
 
     atualizar_relogio(contador_recebido);
 
-    printf("Servidor recebeu: %s - %s | Relogio: %d\n",
-           tipo, nome, relogio_logico);
+    printf(
+        "Servidor recebeu: %s - %s | Relogio: %d\n",
+        tipo,
+        nome,
+        relogio_logico
+    );
+
     fflush(stdout);
 
-    //decisoes
     if (timestamp <= 0) {
         responder(socket, "erro", "Timestamp inválido", 0);
     }
@@ -553,10 +575,111 @@ void processar(void *socket, void *publicador, char *dados, int tamanho) {
     msgpack_unpacked_destroy(&resultado);
 }
 
+// NOVO: recebe mensagens diretamente de outros servidores
+void processar_servidor(void *socket, char *dados, int tamanho) {
+    msgpack_unpacked resultado;
+    msgpack_unpacked_init(&resultado);
+
+    size_t offset = 0;
+
+    if (!msgpack_unpack_next(&resultado, dados, tamanho, &offset)) {
+        responder(socket, "erro", "Mensagem invalida", 0);
+        msgpack_unpacked_destroy(&resultado);
+        return;
+    }
+
+    char tipo[50] = "";
+    char nome[100] = "";
+    int contador_recebido = 0;
+
+    msgpack_object objeto = resultado.data;
+
+    if (objeto.type != MSGPACK_OBJECT_MAP) {
+        responder(socket, "erro", "Formato invalido", 0);
+        msgpack_unpacked_destroy(&resultado);
+        return;
+    }
+
+    for (int i = 0; i < objeto.via.map.size; i++) {
+        msgpack_object chave = objeto.via.map.ptr[i].key;
+        msgpack_object valor = objeto.via.map.ptr[i].val;
+
+        if (chave.type != MSGPACK_OBJECT_STR) {
+            continue;
+        }
+
+        if (chave.via.str.size == 4 &&
+            memcmp(chave.via.str.ptr, "tipo", 4) == 0 &&
+            valor.type == MSGPACK_OBJECT_STR) {
+
+            snprintf(
+                tipo,
+                sizeof(tipo),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
+        }
+
+        if (chave.via.str.size == 4 &&
+            memcmp(chave.via.str.ptr, "nome", 4) == 0 &&
+            valor.type == MSGPACK_OBJECT_STR) {
+
+            snprintf(
+                nome,
+                sizeof(nome),
+                "%.*s",
+                (int)valor.via.str.size,
+                valor.via.str.ptr
+            );
+        }
+
+        if (chave.via.str.size == 14 &&
+            memcmp(chave.via.str.ptr, "relogio_logico", 14) == 0 &&
+            (valor.type == MSGPACK_OBJECT_POSITIVE_INTEGER ||
+             valor.type == MSGPACK_OBJECT_NEGATIVE_INTEGER)) {
+
+            contador_recebido = (int)valor.via.u64;
+        }
+    }
+
+    atualizar_relogio(contador_recebido);
+
+    printf(
+        "Mensagem direta recebida: %s de %s | Relogio: %d\n",
+        tipo,
+        nome,
+        relogio_logico
+    );
+
+    fflush(stdout);
+
+    if (strcmp(tipo, "eleicao") == 0) {
+        responder(socket, "sucesso", "OK", 0);
+    }
+    else {
+        responder(socket, "erro", "Tipo desconhecido", 0);
+    }
+
+    msgpack_unpacked_destroy(&resultado);
+}
+
 int main() {
     void *contexto = zmq_ctx_new();
+
+    // comunicacao com o broker
     void *socket = zmq_socket(contexto, ZMQ_REP);
+
+    // publicacao para os bots
     void *publicador = zmq_socket(contexto, ZMQ_PUB);
+
+    // NOVO: comunicacao direta entre servidores
+    void *socket_servidores = zmq_socket(contexto, ZMQ_REP);
+
+    if (zmq_bind(socket_servidores, "tcp://*:6001") != 0) {
+        perror("Erro ao abrir porta 6001");
+        return 1;
+    }
 
     const char *nome_servidor = getenv("SERVIDOR_NOME");
 
@@ -564,9 +687,9 @@ int main() {
         nome_servidor = "servidor";
     }
 
-    // cadastra o servidor na referencia
     int rank = 0;
 
+    // cadastra o servidor na referencia
     while (rank == 0) {
         rank = consultar_referencia(contexto, "rank", nome_servidor);
 
@@ -577,84 +700,137 @@ int main() {
         }
     }
 
-    printf("%s cadastrado com rank %d\n", nome_servidor, rank);
+    printf(
+        "%s cadastrado com rank %d\n",
+        nome_servidor,
+        rank
+    );
+
     fflush(stdout);
 
-    // lista os servidores cadastrados
     consultar_referencia(contexto, "listar", nome_servidor);
 
     char endereco[100];
 
-    sprintf(endereco, "tcp://broker:%s", getenv("SERVIDOR_PORTA"));
+    snprintf(
+        endereco,
+        sizeof(endereco),
+        "tcp://broker:%s",
+        getenv("SERVIDOR_PORTA")
+    );
 
     zmq_connect(socket, endereco);
     zmq_connect(publicador, "tcp://proxy:5557");
 
     printf("Servidor conectado ao broker\n");
+    printf("Servidor aguardando mensagens diretas na porta 6001\n");
     fflush(stdout);
 
-    // recebe as mensagens do broker
+    // NOVO: monitora os dois sockets
+    zmq_pollitem_t itens[] = {
+        {socket, 0, ZMQ_POLLIN, 0},
+        {socket_servidores, 0, ZMQ_POLLIN, 0}
+    };
+
     while (1) {
-        zmq_msg_t mensagem;
-        zmq_msg_init(&mensagem);
+        int eventos = zmq_poll(itens, 2, 1000);
 
-        int tamanho = zmq_msg_recv(&mensagem, socket, 0);
-
-        if (tamanho >= 0) {
-            processar(socket, publicador, zmq_msg_data(&mensagem), tamanho);
-
-            mensagens_recebidas++;
-
-            // envia heartbeat a cada 10 mensagens
-            if (mensagens_recebidas % 10 == 0) {
-                int resposta = consultar_referencia(
-                    contexto,
-                    "heartbeat",
-                    nome_servidor
-                );
-
-                if (resposta == 1) {
-                    printf(
-                        "%s enviou heartbeat apos %d mensagens - OK\n",
-                        nome_servidor,
-                        mensagens_recebidas
-                    );
-                } else {
-                    printf(
-                        "%s nao conseguiu enviar heartbeat. Tentando recadastro...\n",
-                        nome_servidor
-                    );
-
-                    // tenta cadastrar novamente
-                    int novo_rank = consultar_referencia(
-                        contexto,
-                        "rank",
-                        nome_servidor
-                    );
-
-                    if (novo_rank > 0) {
-                        rank = novo_rank;
-
-                        printf(
-                            "%s recadastrado com rank %d\n",
-                            nome_servidor,
-                            rank
-                        );
-                    } else {
-                        printf(
-                            "%s nao conseguiu se recadastrar\n",
-                            nome_servidor
-                        );
-                    }
-                }
-
-                fflush(stdout);
-            }
+        if (eventos < 0) {
+            break;
         }
 
-        zmq_msg_close(&mensagem);
+        // mensagens recebidas do broker
+        if (itens[0].revents & ZMQ_POLLIN) {
+            zmq_msg_t mensagem;
+            zmq_msg_init(&mensagem);
+
+            int tamanho = zmq_msg_recv(&mensagem, socket, 0);
+
+            if (tamanho >= 0) {
+                processar(
+                    socket,
+                    publicador,
+                    zmq_msg_data(&mensagem),
+                    tamanho
+                );
+
+                mensagens_recebidas++;
+
+                // heartbeat a cada 10 mensagens
+                if (mensagens_recebidas % 10 == 0) {
+                    int resposta = consultar_referencia(
+                        contexto,
+                        "heartbeat",
+                        nome_servidor
+                    );
+
+                    if (resposta == 1) {
+                        printf(
+                            "%s enviou heartbeat apos %d mensagens - OK\n",
+                            nome_servidor,
+                            mensagens_recebidas
+                        );
+                    }
+                    else {
+                        printf(
+                            "%s nao conseguiu enviar heartbeat. Tentando recadastro...\n",
+                            nome_servidor
+                        );
+
+                        int novo_rank = consultar_referencia(
+                            contexto,
+                            "rank",
+                            nome_servidor
+                        );
+
+                        if (novo_rank > 0) {
+                            rank = novo_rank;
+
+                            printf(
+                                "%s recadastrado com rank %d\n",
+                                nome_servidor,
+                                rank
+                            );
+                        }
+                        else {
+                            printf(
+                                "%s nao conseguiu se recadastrar\n",
+                                nome_servidor
+                            );
+                        }
+                    }
+
+                    fflush(stdout);
+                }
+            }
+
+            zmq_msg_close(&mensagem);
+        }
+
+        // NOVO: mensagens recebidas diretamente de outro servidor
+        if (itens[1].revents & ZMQ_POLLIN) {
+            zmq_msg_t mensagem;
+            zmq_msg_init(&mensagem);
+
+            int tamanho = zmq_msg_recv(
+                &mensagem,
+                socket_servidores,
+                0
+            );
+
+            if (tamanho >= 0) {
+                processar_servidor(
+                    socket_servidores,
+                    zmq_msg_data(&mensagem),
+                    tamanho
+                );
+            }
+
+            zmq_msg_close(&mensagem);
+        }
     }
 
+    zmq_close(socket_servidores);
     zmq_close(publicador);
     zmq_close(socket);
     zmq_ctx_destroy(contexto);
