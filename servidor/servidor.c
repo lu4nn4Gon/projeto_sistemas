@@ -544,6 +544,16 @@ static void responder(
         if (f) {
             while (fgets(linha, sizeof(linha), f)) {
                 if (sscanf(linha, "%99[^;]", nome) == 1) {
+                    texto(&pk, nome);
+                }
+            }
+
+            rewind(f);
+        }
+
+        if (f) {
+            while (fgets(linha, sizeof(linha), f)) {
+                if (sscanf(linha, "%99[^;]", nome) == 1) {
                     quantidade++;
                 }
             }
@@ -713,7 +723,7 @@ static void processar(
             responder(
                 socket,
                 "erro",
-                "Erro ao salvar publicacao",
+                "Canal nao existe",
                 0
             );
         }
@@ -838,6 +848,132 @@ static int consultar_par(
     msgpack_unpacked_destroy(&resposta);
 
     return ok;
+}
+
+// Consulta os relogios e calcula a media de Berkeley
+static void calcular_media_berkeley(void) {
+    // Apenas o coordenador realiza o calculo
+    if (strcmp(coordenador, meu_nome) != 0) {
+        return;
+    }
+
+    // Atualiza a lista de servidores
+    if (!consultar_referencia("listar")) {
+        printf("BERKELEY: erro ao consultar referencia\n");
+        fflush(stdout);
+        return;
+    }
+
+    double soma_diferencas = 0.0;
+    int participantes = 1;
+
+    printf(
+        "BERKELEY: coordenador %s iniciou sincronizacao\n",
+        meu_nome
+    );
+
+    printf(
+        "BERKELEY: horario do coordenador: %.6f\n",
+        obter_timestamp()
+    );
+
+    // Consulta os outros servidores
+    for (int i = 0; i < total_servidores; i++) {
+        if (strcmp(servidores[i].nome, meu_nome) == 0) {
+            continue;
+        }
+
+        char endereco[180];
+
+        snprintf(
+            endereco,
+            sizeof(endereco),
+            "tcp://%s:6001",
+            servidores[i].nome
+        );
+
+        msgpack_unpacked resposta;
+
+        double inicio = obter_timestamp();
+
+        if (!requisitar(
+                endereco,
+                "consultar_relogio",
+                meu_nome,
+                700,
+                &resposta
+            )) {
+            printf(
+                "BERKELEY: %s nao respondeu\n",
+                servidores[i].nome
+            );
+
+            continue;
+        }
+
+        double fim = obter_timestamp();
+
+        char status[40] = "";
+
+        ler_texto(
+            campo(resposta.data, "status"),
+            status,
+            sizeof(status)
+        );
+
+        double horario_remoto = ler_numero(
+            campo(resposta.data, "timestamp")
+        );
+
+        if (
+            strcmp(status, "sucesso") == 0 &&
+            horario_remoto > 0
+        ) {
+            // Considera metade do tempo de ida e volta
+            double latencia = (fim - inicio) / 2.0;
+
+            double horario_estimado =
+                horario_remoto + latencia;
+
+            double diferenca =
+                horario_estimado - fim;
+
+            soma_diferencas += diferenca;
+            participantes++;
+
+            printf(
+                "BERKELEY: %s | diferenca: %.6f segundos\n",
+                servidores[i].nome,
+                diferenca
+            );
+        }
+
+        msgpack_unpacked_destroy(&resposta);
+    }
+
+    // Calcula a media incluindo o coordenador
+    double media_diferencas =
+        soma_diferencas / participantes;
+
+    double horario_medio =
+        obter_timestamp() + media_diferencas;
+
+    printf(
+        "BERKELEY: participantes: %d\n",
+        participantes
+    );
+
+    printf(
+        "BERKELEY: media dos desvios: %.6f segundos\n",
+        media_diferencas
+    );
+
+    printf(
+        "BERKELEY: horario medio: %.6f\n",
+        horario_medio
+    );
+
+    fflush(stdout);
 }
 
 // Inicia eleicao pelo algoritmo Bully
@@ -1265,6 +1401,15 @@ int main(void) {
                     }
 
                     fflush(stdout);
+                }
+
+                // Berkeley: calcula a media a cada 15 mensagens
+                // recebidas pelo coordenador
+                if (
+                    mensagens_recebidas % 15 == 0 &&
+                    strcmp(coordenador, meu_nome) == 0
+                ) {
+                    calcular_media_berkeley();
                 }
             }
 
