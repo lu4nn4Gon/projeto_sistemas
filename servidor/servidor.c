@@ -33,9 +33,15 @@ static time_t ultima_verificacao = 0;
 static void *contexto_global = NULL;
 static void *publicador_global = NULL;
 
-// Pega o horario do servidor
+// Pega o horario fisico do servidor com maior precisao
 static double obter_timestamp(void) {
-    return (double)time(NULL) + diferenca_relogio;
+    struct timespec agora;
+
+    clock_gettime(CLOCK_REALTIME, &agora);
+
+    return (double)agora.tv_sec +
+           (double)agora.tv_nsec / 1000000000.0 +
+           diferenca_relogio;
 }
 
 // Atualiza o relogio logico
@@ -505,7 +511,6 @@ static void responder(
     msgpack_packer pk;
 
     msgpack_sbuffer_init(&buffer);
-
     msgpack_packer_init(
         &pk,
         &buffer,
@@ -708,7 +713,7 @@ static void processar(
             responder(
                 socket,
                 "erro",
-                "Canal nao existe",
+                "Erro ao salvar publicacao",
                 0
             );
         }
@@ -970,6 +975,14 @@ static void processar_servidor(
             socket,
             "sucesso",
             "OK",
+            0
+        );
+    }
+    else if (strcmp(tipo, "consultar_relogio") == 0) {
+        responder(
+            socket,
+            "sucesso",
+            "Horario do servidor",
             0
         );
     }
