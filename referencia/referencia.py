@@ -76,14 +76,12 @@ while True:
 
             resposta = {
                 "status": "sucesso",
-                "mensagem": "OK",
-                "timestamp": time.time()
+                "mensagem": "OK"
             }
         else:
             resposta = {
                 "status": "erro",
-                "mensagem": "Servidor nao cadastrado",
-                "timestamp": time.time()
+                "mensagem": "Servidor nao cadastrado"
             }
 
     else:
