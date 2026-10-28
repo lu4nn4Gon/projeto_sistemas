@@ -76,12 +76,14 @@ while True:
 
             resposta = {
                 "status": "sucesso",
-                "mensagem": "OK"
+                "mensagem": "OK",
+                "timestamp": time.time()
             }
         else:
             resposta = {
                 "status": "erro",
-                "mensagem": "Servidor nao cadastrado"
+                "mensagem": "Servidor nao cadastrado",
+                "timestamp": time.time()
             }
 
     else:
@@ -95,4 +97,5 @@ while True:
     relogio_logico += 1
     resposta["relogio_logico"] = relogio_logico
 
-    socket.send(msgpack.packb(resposta))
+    # envia a resposta usando MessagePack
+    socket.send(msgpack.packb(resposta, use_bin_type=True))

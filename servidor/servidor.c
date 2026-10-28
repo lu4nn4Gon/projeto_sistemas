@@ -230,6 +230,7 @@ static int requisitar(
     msgpack_packer pk;
 
     msgpack_sbuffer_init(&buffer);
+
     msgpack_packer_init(
         &pk,
         &buffer,
@@ -321,7 +322,6 @@ static int consultar_referencia(const char *tipo) {
                 i++
             ) {
                 msgpack_object s = lista.via.array.ptr[i];
-
                 Servidor *dest = &servidores[total_servidores];
 
                 dest->nome[0] = '\0';
@@ -511,6 +511,7 @@ static void responder(
     msgpack_packer pk;
 
     msgpack_sbuffer_init(&buffer);
+
     msgpack_packer_init(
         &pk,
         &buffer,
@@ -540,16 +541,6 @@ static void responder(
         char nome[100];
 
         int quantidade = 0;
-
-        if (f) {
-            while (fgets(linha, sizeof(linha), f)) {
-                if (sscanf(linha, "%99[^;]", nome) == 1) {
-                    texto(&pk, nome);
-                }
-            }
-
-            rewind(f);
-        }
 
         if (f) {
             while (fgets(linha, sizeof(linha), f)) {
@@ -781,7 +772,6 @@ static void anunciar_coordenador(void) {
     );
 
     coordenador[sizeof(coordenador) - 1] = '\0';
-
     aguardando_coordenador = 0;
 
     // Publica no topico servers
@@ -850,6 +840,116 @@ static int consultar_par(
     return ok;
 }
 
+// Envia a correcao do relogio para outro servidor
+static int enviar_ajuste(
+    const char *nome,
+    double ajuste
+) {
+    char endereco[180];
+
+    snprintf(
+        endereco,
+        sizeof(endereco),
+        "tcp://%s:6001",
+        nome
+    );
+
+    void *socket = novo_req(endereco, 1500);
+
+    if (!socket) {
+        return 0;
+    }
+
+    msgpack_sbuffer buffer;
+    msgpack_packer pk;
+
+    msgpack_sbuffer_init(&buffer);
+
+    msgpack_packer_init(
+        &pk,
+        &buffer,
+        msgpack_sbuffer_write
+    );
+
+    msgpack_pack_map(&pk, 5);
+
+    texto(&pk, "tipo");
+    texto(&pk, "ajustar_relogio");
+
+    texto(&pk, "nome");
+    texto(&pk, meu_nome);
+
+    texto(&pk, "timestamp");
+    msgpack_pack_double(&pk, obter_timestamp());
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
+
+    texto(&pk, "ajuste");
+    msgpack_pack_double(&pk, ajuste);
+
+    int enviado = zmq_send(
+        socket,
+        buffer.data,
+        buffer.size,
+        0
+    );
+
+    msgpack_sbuffer_destroy(&buffer);
+
+    if (enviado < 0) {
+        zmq_close(socket);
+        return 0;
+    }
+
+    zmq_msg_t mensagem;
+    zmq_msg_init(&mensagem);
+
+    int n = zmq_msg_recv(
+        &mensagem,
+        socket,
+        0
+    );
+
+    int ok = 0;
+
+    if (n >= 0) {
+        msgpack_unpacked resposta;
+
+        if (desempacotar(
+                zmq_msg_data(&mensagem),
+                (size_t)n,
+                &resposta
+            )) {
+            char status[40] = "";
+
+            ler_texto(
+                campo(resposta.data, "status"),
+                status,
+                sizeof(status)
+            );
+
+            atualizar_relogio(
+                ler_inteiro(
+                    campo(
+                        resposta.data,
+                        "relogio_logico"
+                    )
+                )
+            );
+
+            ok = strcmp(status, "sucesso") == 0;
+        }
+
+        msgpack_unpacked_destroy(&resposta);
+    }
+
+    zmq_msg_close(&mensagem);
+    zmq_close(socket);
+
+    return ok;
+}
+
 // Consulta os relogios e calcula a media de Berkeley
 static void calcular_media_berkeley(void) {
     // Apenas o coordenador realiza o calculo
@@ -866,6 +966,10 @@ static void calcular_media_berkeley(void) {
 
     double soma_diferencas = 0.0;
     int participantes = 1;
+
+    // Guarda os desvios para calcular os ajustes
+    double desvios[MAX_SERVIDORES] = {0};
+    int ativos[MAX_SERVIDORES] = {0};
 
     printf(
         "BERKELEY: coordenador %s iniciou sincronizacao\n",
@@ -907,7 +1011,6 @@ static void calcular_media_berkeley(void) {
                 "BERKELEY: %s nao respondeu\n",
                 servidores[i].nome
             );
-
             continue;
         }
 
@@ -941,6 +1044,10 @@ static void calcular_media_berkeley(void) {
             soma_diferencas += diferenca;
             participantes++;
 
+            // Guarda o desvio deste servidor
+            desvios[i] = diferenca;
+            ativos[i] = 1;
+
             printf(
                 "BERKELEY: %s | diferenca: %.6f segundos\n",
                 servidores[i].nome,
@@ -971,6 +1078,42 @@ static void calcular_media_berkeley(void) {
     printf(
         "BERKELEY: horario medio: %.6f\n",
         horario_medio
+    );
+
+    // Envia os ajustes aos outros servidores
+    for (int i = 0; i < total_servidores; i++) {
+        if (!ativos[i]) {
+            continue;
+        }
+
+        double ajuste =
+            media_diferencas - desvios[i];
+
+        if (enviar_ajuste(
+                servidores[i].nome,
+                ajuste
+            )) {
+            printf(
+                "BERKELEY: ajuste enviado a %s: %+.6f segundos\n",
+                servidores[i].nome,
+                ajuste
+            );
+        }
+        else {
+            printf(
+                "BERKELEY: falha ao ajustar %s\n",
+                servidores[i].nome
+            );
+        }
+    }
+
+    // Ajusta o relogio do proprio coordenador
+    diferenca_relogio += media_diferencas;
+
+    printf(
+        "BERKELEY: coordenador %s ajustou seu relogio em %+.6f segundos\n",
+        meu_nome,
+        media_diferencas
     );
 
     fflush(stdout);
@@ -1011,7 +1154,6 @@ static void iniciar_eleicao(void) {
             );
 
             fflush(stdout);
-
             maior_respondeu = 1;
         }
     }
@@ -1023,7 +1165,6 @@ static void iniciar_eleicao(void) {
     }
     else {
         coordenador[0] = '\0';
-
         aguardando_coordenador = 1;
         inicio_espera = time(NULL);
 
@@ -1121,6 +1262,60 @@ static void processar_servidor(
             "Horario do servidor",
             0
         );
+    }
+    else if (strcmp(tipo, "ajustar_relogio") == 0) {
+        // Apenas o coordenador pode enviar ajustes
+        if (
+            strcmp(nome, coordenador) != 0 ||
+            strcmp(nome, meu_nome) == 0
+        ) {
+            responder(
+                socket,
+                "erro",
+                "Somente coordenador pode ajustar",
+                0
+            );
+        }
+        else {
+            msgpack_object valor = campo(
+                resultado.data,
+                "ajuste"
+            );
+
+            if (
+                valor.type != MSGPACK_OBJECT_FLOAT64 &&
+                valor.type != MSGPACK_OBJECT_FLOAT32
+            ) {
+                responder(
+                    socket,
+                    "erro",
+                    "Ajuste invalido",
+                    0
+                );
+            }
+            else {
+                double ajuste = ler_numero(valor);
+
+                // Aplica o ajuste no relogio fisico
+                diferenca_relogio += ajuste;
+
+                printf(
+                    "BERKELEY: %s recebeu ajuste de %s: %+.6f segundos\n",
+                    meu_nome,
+                    nome,
+                    ajuste
+                );
+
+                fflush(stdout);
+
+                responder(
+                    socket,
+                    "sucesso",
+                    "Relogio ajustado",
+                    0
+                );
+            }
+        }
     }
     else {
         responder(
@@ -1284,7 +1479,6 @@ int main(void) {
 
     // Conecta ao broker
     const char *porta = getenv("SERVIDOR_PORTA");
-
     char endereco[100];
 
     snprintf(
@@ -1504,7 +1698,6 @@ int main(void) {
     zmq_close(socket_servidores);
     zmq_close(publicador_global);
     zmq_close(socket);
-
     zmq_ctx_destroy(contexto_global);
 
     return 0;
