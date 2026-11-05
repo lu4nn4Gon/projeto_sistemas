@@ -18,6 +18,8 @@ static int relogio_logico = 0;
 static int mensagens_recebidas = 0;
 static double diferenca_relogio = 0;
 
+static unsigned long long contador_publicacoes = 0;
+
 static Servidor servidores[MAX_SERVIDORES];
 static int total_servidores = 0;
 
@@ -32,6 +34,45 @@ static time_t ultima_verificacao = 0;
 
 static void *contexto_global = NULL;
 static void *publicador_global = NULL;
+
+// recuperando o contador salvo no disco
+static void carregar_contador_publicacoes(void) {
+    FILE *f = fopen("contador_publicacoes.txt", "r");
+
+    if (!f) {
+        contador_publicacoes = 0;
+        return;
+    }
+
+    if (fscanf(f, "%llu", &contador_publicacoes) != 1) {
+        contador_publicacoes = 0;
+    }
+
+    fclose(f);
+}
+
+// incrementando/salvando o contador
+static int incrementar_contador_publicacoes(void) {
+    unsigned long long proximo = contador_publicacoes + 1;
+
+    FILE *f = fopen("contador_publicacoes.txt", "w");
+
+    if (!f) {
+        return 0;
+    }
+
+    if (fprintf(f, "%llu\n", proximo) < 0) {
+        fclose(f);
+        return 0;
+    }
+
+    if (fclose(f) != 0) {
+        return 0;
+    }
+
+    contador_publicacoes = proximo;
+    return 1;
+}
 
 // Pega o horario fisico do servidor com maior precisao
 static double obter_timestamp(void) {
@@ -412,27 +453,33 @@ static int canal_existe(const char *nome) {
     return 0;
 }
 
-// Salva publicacao
+// salvando publicacao com ID
 static int salvar_publicacao(
     const char *canal,
     const char *mensagem,
     double timestamp
 ) {
+    if (!incrementar_contador_publicacoes()) {
+        return 0;
+    }
+
     FILE *f = fopen("publicacoes.txt", "a");
 
     if (!f) {
         return 0;
     }
 
-    fprintf(
+    int gravado = fprintf(
         f,
-        "%.0f;%s;%s\n",
+        "%.0f;%s;%s;%s:%llu\n",
         timestamp,
         canal,
-        mensagem
+        mensagem,
+        meu_nome,
+        contador_publicacoes
     );
 
-    int ok = !ferror(f);
+    int ok = gravado >= 0 && !ferror(f);
 
     if (fclose(f) != 0) {
         ok = 0;
@@ -1393,6 +1440,8 @@ static void receber_anuncio(void *assinante) {
 }
 
 int main(void) {
+     // recuperando o contador persistente
+    carregar_contador_publicacoes();
     contexto_global = zmq_ctx_new();
 
     if (!contexto_global) {
