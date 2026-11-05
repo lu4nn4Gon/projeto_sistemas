@@ -1455,6 +1455,64 @@ static void processar_servidor(
             }
         }
     }
+    else if (strcmp(tipo, "replicar_publicacao") == 0) {
+        char id[150] = "";
+        char canal[100] = "";
+        char mensagem[1024] = "";
+
+        ler_texto(
+            campo(resultado.data, "id"),
+            id,
+            sizeof(id)
+        );
+
+        ler_texto(
+            campo(resultado.data, "canal"),
+            canal,
+            sizeof(canal)
+        );
+
+        ler_texto(
+            campo(resultado.data, "mensagem"),
+            mensagem,
+            sizeof(mensagem)
+        );
+
+        double timestamp = ler_numero(
+            campo(resultado.data, "timestamp")
+        );
+
+        if (!id[0] || !canal[0] ||
+            !mensagem[0] || timestamp <= 0) {
+            responder(
+                socket,
+                "erro",
+                "Publicacao replicada invalida",
+                0
+            );
+        }
+        else if (salvar_publicacao_replicada(
+                     id,
+                     canal,
+                     mensagem,
+                     timestamp
+                 )) {
+            responder(
+                socket,
+                "sucesso",
+                "Publicacao replicada",
+                0
+            );
+        }
+        else {
+            responder(
+                socket,
+                "erro",
+                "Erro ao salvar replica",
+                0
+            );
+        }
+    }
     else {
         responder(
             socket,
