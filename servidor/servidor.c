@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <zmq.h>
 #include <msgpack.h>
+#include <errno.h>
 
 #define MAX_SERVIDORES 32
 #define INTERVALO_ELEICAO 5
@@ -453,6 +454,54 @@ static int canal_existe(const char *nome) {
     return 0;
 }
 
+
+// Verifica se uma publicacao ja foi armazenada
+static int publicacao_existe(const char *id) {
+    FILE *f = fopen("publicacoes.txt", "r");
+
+    if (!f) {
+        // Arquivo ainda nao existe
+        if (errno == ENOENT) {
+            return 0;
+        }
+
+        return -1;
+    }
+
+    char *linha = NULL;
+    size_t capacidade = 0;
+    int existe = 0;
+
+    while (getline(&linha, &capacidade, f) != -1) {
+        char *ultimo_separador = strrchr(linha, ';');
+
+        if (!ultimo_separador) {
+            continue;
+        }
+
+        char *id_salvo = ultimo_separador + 1;
+        id_salvo[strcspn(id_salvo, "\r\n")] = '\0';
+
+        if (strcmp(id_salvo, id) == 0) {
+            existe = 1;
+            break;
+        }
+    }
+
+    if (ferror(f)) {
+        existe = -1;
+    }
+
+    free(linha);
+
+    if (fclose(f) != 0) {
+        return -1;
+    }
+
+    return existe;
+}
+
+
 // salvando publicacao com ID
 static int salvar_publicacao(
     const char *canal,
@@ -477,6 +526,48 @@ static int salvar_publicacao(
         mensagem,
         meu_nome,
         contador_publicacoes
+    );
+
+    int ok = gravado >= 0 && !ferror(f);
+
+    if (fclose(f) != 0) {
+        ok = 0;
+    }
+
+    return ok;
+}
+
+// Salva uma publicacao recebida de outro servidor
+static int salvar_publicacao_replicada(
+    const char *id,
+    const char *canal,
+    const char *mensagem,
+    double timestamp
+) {
+    int existe = publicacao_existe(id);
+
+    if (existe == 1) {
+        // Publicacao ja armazenada
+        return 1;
+    }
+
+    if (existe == -1) {
+        return 0;
+    }
+
+    FILE *f = fopen("publicacoes.txt", "a");
+
+    if (!f) {
+        return 0;
+    }
+
+    int gravado = fprintf(
+        f,
+        "%.0f;%s;%s;%s\n",
+        timestamp,
+        canal,
+        mensagem,
+        id
     );
 
     int ok = gravado >= 0 && !ferror(f);
