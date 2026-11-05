@@ -506,9 +506,30 @@ static int publicacao_existe(const char *id) {
 static int salvar_publicacao(
     const char *canal,
     const char *mensagem,
-    double timestamp
+    double timestamp,
+    char *id,
+    size_t capacidade_id
 ) {
+    if (!id || capacidade_id == 0) {
+        return 0;
+    }
+
+    id[0] = '\0';
+
     if (!incrementar_contador_publicacoes()) {
+        return 0;
+    }
+
+    int tamanho = snprintf(
+        id,
+        capacidade_id,
+        "%s:%llu",
+        meu_nome,
+        contador_publicacoes
+    );
+
+    if (tamanho < 0 || (size_t)tamanho >= capacidade_id) {
+        id[0] = '\0';
         return 0;
     }
 
@@ -520,18 +541,21 @@ static int salvar_publicacao(
 
     int gravado = fprintf(
         f,
-        "%.0f;%s;%s;%s:%llu\n",
+        "%.0f;%s;%s;%s\n",
         timestamp,
         canal,
         mensagem,
-        meu_nome,
-        contador_publicacoes
+        id
     );
 
     int ok = gravado >= 0 && !ferror(f);
 
     if (fclose(f) != 0) {
         ok = 0;
+    }
+
+    if (!ok) {
+        id[0] = '\0';
     }
 
     return ok;
@@ -749,6 +773,7 @@ static void processar(
     char nome[100] = "";
     char canal[100] = "";
     char mensagem[1024] = "";
+    char id_publicacao[150] = "";
 
     ler_texto(
         campo(obj, "tipo"),
@@ -857,10 +882,12 @@ static void processar(
             );
         }
         else if (!salvar_publicacao(
-                     canal,
-                     mensagem,
-                     timestamp
-                 )) {
+             canal,
+             mensagem,
+             timestamp,
+             id_publicacao,
+             sizeof(id_publicacao)
+         )) {
             responder(
                 socket,
                 "erro",
