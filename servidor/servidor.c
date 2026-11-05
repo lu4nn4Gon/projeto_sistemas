@@ -9,17 +9,27 @@
 
 #define MAX_SERVIDORES 32
 #define INTERVALO_ELEICAO 5
+#define MAX_REPLICAS_PENDENTES 100
 
 typedef struct {
     char nome[100];
     int rank;
 } Servidor;
 
+typedef struct {
+    char id[150];
+    char canal[100];
+    char mensagem[1024];
+    double timestamp;
+} PublicacaoPendente;
+
 static int relogio_logico = 0;
 static int mensagens_recebidas = 0;
 static double diferenca_relogio = 0;
 
 static unsigned long long contador_publicacoes = 0;
+static PublicacaoPendente replicas_pendentes[MAX_REPLICAS_PENDENTES];
+static int total_replicas_pendentes = 0;
 
 static Servidor servidores[MAX_SERVIDORES];
 static int total_servidores = 0;
@@ -603,6 +613,146 @@ static int salvar_publicacao_replicada(
     return ok;
 }
 
+// Adiciona uma publicacao a fila de replicacao
+static int adicionar_replica_pendente(
+    const char *id,
+    const char *canal,
+    const char *mensagem,
+    double timestamp
+) {
+    if (total_replicas_pendentes >= MAX_REPLICAS_PENDENTES) {
+        return 0;
+    }
+
+    PublicacaoPendente *p =
+        &replicas_pendentes[total_replicas_pendentes];
+
+    snprintf(p->id, sizeof(p->id), "%s", id);
+    snprintf(p->canal, sizeof(p->canal), "%s", canal);
+    snprintf(p->mensagem, sizeof(p->mensagem), "%s", mensagem);
+
+    p->timestamp = timestamp;
+
+    total_replicas_pendentes++;
+
+    return 1;
+}
+
+// Envia uma publicacao para outro servidor
+static int enviar_publicacao(
+    const char *destino,
+    const char *id,
+    const char *canal,
+    const char *mensagem,
+    double timestamp
+) {
+    char endereco[180];
+
+    snprintf(
+        endereco,
+        sizeof(endereco),
+        "tcp://%s:6001",
+        destino
+    );
+
+    void *socket = novo_req(endereco, 1500);
+
+    if (!socket) {
+        return 0;
+    }
+
+    msgpack_sbuffer buffer;
+    msgpack_packer pk;
+
+    msgpack_sbuffer_init(&buffer);
+    msgpack_packer_init(
+        &pk,
+        &buffer,
+        msgpack_sbuffer_write
+    );
+
+    msgpack_pack_map(&pk, 7);
+
+    texto(&pk, "tipo");
+    texto(&pk, "replicar_publicacao");
+
+    texto(&pk, "nome");
+    texto(&pk, meu_nome);
+
+    texto(&pk, "id");
+    texto(&pk, id);
+
+    texto(&pk, "canal");
+    texto(&pk, canal);
+
+    texto(&pk, "mensagem");
+    texto(&pk, mensagem);
+
+    texto(&pk, "timestamp");
+    msgpack_pack_double(&pk, timestamp);
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
+
+    int enviado = zmq_send(
+        socket,
+        buffer.data,
+        buffer.size,
+        0
+    );
+
+    msgpack_sbuffer_destroy(&buffer);
+
+    if (enviado < 0) {
+        zmq_close(socket);
+        return 0;
+    }
+
+    zmq_msg_t resposta_msg;
+    zmq_msg_init(&resposta_msg);
+
+    int n = zmq_msg_recv(
+        &resposta_msg,
+        socket,
+        0
+    );
+
+    int ok = 0;
+
+    if (n >= 0) {
+        msgpack_unpacked resposta;
+
+        if (desempacotar(
+                zmq_msg_data(&resposta_msg),
+                (size_t)n,
+                &resposta
+            )) {
+            char status[40] = "";
+
+            ler_texto(
+                campo(resposta.data, "status"),
+                status,
+                sizeof(status)
+            );
+
+            atualizar_relogio(
+                ler_inteiro(
+                    campo(resposta.data, "relogio_logico")
+                )
+            );
+
+            ok = strcmp(status, "sucesso") == 0;
+        }
+
+        msgpack_unpacked_destroy(&resposta);
+    }
+
+    zmq_msg_close(&resposta_msg);
+    zmq_close(socket);
+
+    return ok;
+}
+
 // Publica mensagem no proxy
 static int publicar(
     void *publicador,
@@ -819,11 +969,23 @@ static void processar(
     fflush(stdout);
 
     if (timestamp <= 0) {
-        responder(socket, "erro", "Timestamp invalido", 0);
+        responder(
+            socket,
+            "erro",
+            "Timestamp invalido",
+            0
+        );
     }
+
+    // Login
     else if (strcmp(tipo, "login") == 0) {
         if (!nome[0]) {
-            responder(socket, "erro", "Nome vazio", 0);
+            responder(
+                socket,
+                "erro",
+                "Nome vazio",
+                0
+            );
         }
         else if (salvar("logins.txt", nome, timestamp)) {
             responder(
@@ -834,15 +996,32 @@ static void processar(
             );
         }
         else {
-            responder(socket, "erro", "Erro ao salvar login", 0);
+            responder(
+                socket,
+                "erro",
+                "Erro ao salvar login",
+                0
+            );
         }
     }
+
+    // Criar canal
     else if (strcmp(tipo, "criar_canal") == 0) {
         if (!nome[0]) {
-            responder(socket, "erro", "Nome do canal vazio", 0);
+            responder(
+                socket,
+                "erro",
+                "Nome do canal vazio",
+                0
+            );
         }
         else if (canal_existe(nome)) {
-            responder(socket, "erro", "Canal ja existe", 0);
+            responder(
+                socket,
+                "erro",
+                "Canal ja existe",
+                0
+            );
         }
         else if (salvar("canais.txt", nome, timestamp)) {
             responder(
@@ -853,9 +1032,16 @@ static void processar(
             );
         }
         else {
-            responder(socket, "erro", "Erro ao criar canal", 0);
+            responder(
+                socket,
+                "erro",
+                "Erro ao criar canal",
+                0
+            );
         }
     }
+
+    // Listar canais
     else if (strcmp(tipo, "listar_canais") == 0) {
         responder(
             socket,
@@ -864,6 +1050,8 @@ static void processar(
             1
         );
     }
+
+    // Publicar mensagem
     else if (strcmp(tipo, "publicar") == 0) {
         if (!canal[0] || !mensagem[0]) {
             responder(
@@ -882,12 +1070,12 @@ static void processar(
             );
         }
         else if (!salvar_publicacao(
-             canal,
-             mensagem,
-             timestamp,
-             id_publicacao,
-             sizeof(id_publicacao)
-         )) {
+                     canal,
+                     mensagem,
+                     timestamp,
+                     id_publicacao,
+                     sizeof(id_publicacao)
+                 )) {
             responder(
                 socket,
                 "erro",
@@ -900,6 +1088,28 @@ static void processar(
                      canal,
                      mensagem
                  )) {
+
+            // Adiciona a publicacao a fila de replicacao
+            if (adicionar_replica_pendente(
+                    id_publicacao,
+                    canal,
+                    mensagem,
+                    timestamp
+                )) {
+                printf(
+                    "Publicacao %s adicionada a fila de replicacao\n",
+                    id_publicacao
+                );
+            }
+            else {
+                printf(
+                    "AVISO: fila de replicacao cheia para %s\n",
+                    id_publicacao
+                );
+            }
+
+            fflush(stdout);
+
             responder(
                 socket,
                 "sucesso",
@@ -916,6 +1126,8 @@ static void processar(
             );
         }
     }
+
+    // Funcionalidade desconhecida
     else {
         responder(
             socket,
