@@ -11,6 +11,7 @@
 #define INTERVALO_ELEICAO 5
 #define MAX_REPLICAS_PENDENTES 100
 #define INTERVALO_REPLICACAO 2
+#define INTERVALO_RECUPERACAO 5
 
 typedef struct {
     char nome[100];
@@ -23,16 +24,21 @@ typedef struct {
     char mensagem[1024];
     double timestamp;
 
+    // Servidores que precisam receber a publicacao
+    char servidores_destino[MAX_SERVIDORES][100];
+    int total_destinos;
+
+    // Servidores que ja confirmaram o recebimento
     char servidores_confirmados[MAX_SERVIDORES][100];
     int total_confirmados;
 
 } PublicacaoPendente;
 
 typedef struct {
-
     void *socket;
     int indice_publicacao;
     int indice_servidor;
+    char nome_servidor[100];
     int aguardando_resposta;
     time_t inicio_envio;
 
@@ -46,6 +52,8 @@ static unsigned long long contador_publicacoes = 0;
 static PublicacaoPendente replicas_pendentes[MAX_REPLICAS_PENDENTES];
 static int total_replicas_pendentes = 0;
 static time_t ultima_tentativa_replicacao = 0;
+static time_t ultima_recuperacao_replicacao = 0;
+static int proxima_publicacao_replicacao = 0;
 static EnvioReplica envio_atual = {0};
 
 static Servidor servidores[MAX_SERVIDORES];
@@ -481,6 +489,15 @@ static int canal_existe(const char *nome) {
     return 0;
 }
 
+// Verifica se uma publicacao foi criada neste servidor
+static int publicacao_local(const char *id) {
+
+    size_t tamanho_nome = strlen(meu_nome);
+
+    return strlen(id) > tamanho_nome &&
+           strncmp(id, meu_nome, tamanho_nome) == 0 &&
+           id[tamanho_nome] == ':';
+}
 
 // Verifica se uma publicacao ja foi armazenada
 static int publicacao_existe(const char *id) {
@@ -630,6 +647,67 @@ static int salvar_publicacao_replicada(
     return ok;
 }
 
+// Identifica os destinos da replicacao. Os dois servidores do compose
+// continuam sendo destinos mesmo quando um deles esta temporariamente fora.
+static int listar_destinos_replica(char destinos[MAX_SERVIDORES][100]) {
+    int total = 0;
+
+    if (strcmp(meu_nome, "servidor1") == 0 ||
+        strcmp(meu_nome, "servidor2") == 0) {
+        snprintf(destinos[total++], 100, "%s",
+                 strcmp(meu_nome, "servidor1") == 0 ? "servidor2" : "servidor1");
+    }
+
+    for (int i = 0; i < total_servidores && total < MAX_SERVIDORES; i++) {
+        const char *nome = servidores[i].nome;
+        if (!nome[0] || strcmp(nome, meu_nome) == 0) continue;
+        int repetido = 0;
+        for (int j = 0; j < total; j++) {
+            if (strcmp(destinos[j], nome) == 0) repetido = 1;
+        }
+        if (!repetido) snprintf(destinos[total++], 100, "%s", nome);
+    }
+    return total;
+}
+
+// Confirmações persistentes: o par id/destino fica registrado no disco.
+static int confirmacao_no_disco(const char *id, const char *destino) {
+    FILE *f = fopen("replicacao_confirmacoes.txt", "r");
+    if (!f) return 0;
+    char *linha = NULL;
+    size_t capacidade = 0;
+    int confirmado = 0;
+    while (getline(&linha, &capacidade, f) != -1) {
+        char *separador = strchr(linha, ';');
+        if (!separador) continue;
+        *separador++ = '\0';
+        separador[strcspn(separador, "\r\n")] = '\0';
+        if (strcmp(linha, id) == 0 && strcmp(separador, destino) == 0) {
+            confirmado = 1;
+            break;
+        }
+    }
+    free(linha);
+    fclose(f);
+    return confirmado;
+}
+
+static int salvar_confirmacao_no_disco(const char *id, const char *destino) {
+    if (confirmacao_no_disco(id, destino)) return 1;
+    FILE *f = fopen("replicacao_confirmacoes.txt", "a");
+    if (!f) return 0;
+    int ok = fprintf(f, "%s;%s\n", id, destino) >= 0;
+    if (fclose(f) != 0) ok = 0;
+    return ok;
+}
+
+static int replica_esta_na_fila(const char *id) {
+    for (int i = 0; i < total_replicas_pendentes; i++) {
+        if (strcmp(replicas_pendentes[i].id, id) == 0) return 1;
+    }
+    return 0;
+}
+
 // Adiciona uma publicacao a fila de replicacao
 static int adicionar_replica_pendente(
     const char *id,
@@ -650,6 +728,10 @@ static int adicionar_replica_pendente(
 
     p->timestamp = timestamp;
 
+    memset(p->servidores_destino, 0, sizeof(p->servidores_destino));
+    p->total_destinos = listar_destinos_replica(p->servidores_destino);
+    if (p->total_destinos == 0) return 0;
+
     // Inicializa o controle de confirmacoes
     p->total_confirmados = 0;
 
@@ -660,7 +742,186 @@ static int adicionar_replica_pendente(
 
     );
 
+    // Restaura as confirmacoes anteriores, inclusive apos reinicializacao.
+    for (int i = 0; i < p->total_destinos; i++) {
+        if (confirmacao_no_disco(p->id, p->servidores_destino[i])) {
+            snprintf(p->servidores_confirmados[p->total_confirmados++],
+                     sizeof(p->servidores_confirmados[0]), "%s",
+                     p->servidores_destino[i]);
+        }
+    }
+
     total_replicas_pendentes++;
+
+    return 1;
+}
+
+// Reconstroi a fila a partir das publicacoes locais no disco.
+// O limite de 100 vale apenas para a fila em memoria: o restante sera
+// carregado em ciclos posteriores, sem descartar publicacoes antigas.
+static void recuperar_replicas_do_disco(void) {
+    if (envio_atual.socket != NULL ||
+        total_replicas_pendentes >= MAX_REPLICAS_PENDENTES) return;
+
+    FILE *f = fopen("publicacoes.txt", "r");
+    if (!f) return;
+    char *linha = NULL;
+    size_t capacidade = 0;
+    int recuperadas = 0;
+
+    while (total_replicas_pendentes < MAX_REPLICAS_PENDENTES &&
+           getline(&linha, &capacidade, f) != -1) {
+        char *primeiro = strchr(linha, ';');
+        if (!primeiro) continue;
+        char *segundo = strchr(primeiro + 1, ';');
+        if (!segundo) continue;
+        char *ultimo = strrchr(segundo + 1, ';');
+        if (!ultimo || ultimo == segundo) continue;
+
+        *primeiro = '\0';
+        *segundo = '\0';
+        *ultimo = '\0';
+        char *id = ultimo + 1;
+        id[strcspn(id, "\r\n")] = '\0';
+        if (!publicacao_local(id) || replica_esta_na_fila(id)) continue;
+
+        // Nao reabre publicacoes que ja possuem todas as confirmacoes.
+        char destinos[MAX_SERVIDORES][100] = {{0}};
+        int total = listar_destinos_replica(destinos);
+        if (total == 0) continue;
+        int completo = 1;
+        for (int j = 0; j < total; j++) {
+            if (!confirmacao_no_disco(id, destinos[j])) {
+                completo = 0;
+                break;
+            }
+        }
+        if (completo) continue;
+
+        char *fim = NULL;
+        double timestamp = strtod(linha, &fim);
+        if (fim == linha || timestamp <= 0) continue;
+        if (adicionar_replica_pendente(id, primeiro + 1,
+                                      segundo + 1, timestamp)) {
+            recuperadas++;
+        }
+    }
+    free(linha);
+    fclose(f);
+    if (recuperadas) {
+        printf("RECUPERACAO: %d publicacoes adicionadas a fila\n", recuperadas);
+        fflush(stdout);
+    }
+}
+
+// Verifica se um servidor ja confirmou uma publicacao
+static int servidor_confirmou_replica(
+    PublicacaoPendente *p,
+    const char *nome_servidor
+) {
+    for (int i = 0; i < p->total_confirmados; i++) {
+        if (
+            strcmp(
+                p->servidores_confirmados[i],
+                nome_servidor
+            ) == 0
+        ) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+// Registra a confirmacao de uma publicacao
+static int registrar_confirmacao_replica(
+    PublicacaoPendente *p,
+    const char *nome_servidor
+) {
+    if (servidor_confirmou_replica(p, nome_servidor)) {
+        return 1;
+    }
+
+    if (p->total_confirmados >= MAX_SERVIDORES) {
+        return 0;
+    }
+
+    // Nao considera confirmado se nao conseguir persistir no disco.
+    if (!salvar_confirmacao_no_disco(p->id, nome_servidor)) return 0;
+
+    snprintf(
+        p->servidores_confirmados[p->total_confirmados],
+        sizeof(p->servidores_confirmados[0]),
+        "%s",
+        nome_servidor
+    );
+
+    p->total_confirmados++;
+
+    printf(
+        "Replicacao de %s confirmada por %s\n",
+        p->id,
+        nome_servidor
+    );
+
+    fflush(stdout);
+
+    return 1;
+}
+
+// Remove uma publicacao da fila de replicacao
+static void remover_replica_pendente(int indice) {
+
+    if (
+        indice < 0 ||
+        indice >= total_replicas_pendentes
+    ) {
+        return;
+    }
+
+    printf(
+        "Publicacao %s removida da fila de replicacao\n",
+        replicas_pendentes[indice].id
+    );
+
+    fflush(stdout);
+
+    // Move as publicacoes seguintes uma posicao para tras
+    for (
+        int i = indice;
+        i < total_replicas_pendentes - 1;
+        i++
+    ) {
+        replicas_pendentes[i] = replicas_pendentes[i + 1];
+    }
+
+    total_replicas_pendentes--;
+
+    memset(
+        &replicas_pendentes[total_replicas_pendentes],
+        0,
+        sizeof(PublicacaoPendente)
+    );
+}
+
+// Verifica se todos os destinos confirmaram a publicacao
+static int replica_totalmente_confirmada(
+    PublicacaoPendente *p
+) {
+    // Sem destinos registrados, nao remove a publicacao
+    if (p->total_destinos == 0) {
+        return 0;
+    }
+
+    for (int i = 0; i < p->total_destinos; i++) {
+
+        const char *destino = p->servidores_destino[i];
+
+        // Verifica se o destino confirmou
+        if (!servidor_confirmou_replica(p, destino)) {
+            return 0;
+        }
+    }
 
     return 1;
 }
@@ -794,7 +1055,7 @@ static void encerrar_envio_replica(void) {
 // Inicia o envio assincrono de uma replica
 static int iniciar_envio_replica(
     int indice_publicacao,
-    int indice_servidor
+    const char *nome_servidor
 ) {
     if (envio_atual.socket != NULL) {
         return 0;
@@ -803,8 +1064,7 @@ static int iniciar_envio_replica(
     if (
         indice_publicacao < 0 ||
         indice_publicacao >= total_replicas_pendentes ||
-        indice_servidor < 0 ||
-        indice_servidor >= total_servidores
+        !nome_servidor || !nome_servidor[0]
     ) {
         return 0;
     }
@@ -815,7 +1075,7 @@ static int iniciar_envio_replica(
         endereco,
         sizeof(endereco),
         "tcp://%s:6001",
-        servidores[indice_servidor].nome
+        nome_servidor
     );
 
     void *socket = novo_req(endereco, 1500);
@@ -825,8 +1085,18 @@ static int iniciar_envio_replica(
     }
 
     envio_atual.socket = socket;
+
     envio_atual.indice_publicacao = indice_publicacao;
-    envio_atual.indice_servidor = indice_servidor;
+    envio_atual.indice_servidor = -1;
+
+    // Guarda o nome do servidor no momento do envio
+    snprintf(
+        envio_atual.nome_servidor,
+        sizeof(envio_atual.nome_servidor),
+        "%s",
+        nome_servidor
+    );
+
     envio_atual.aguardando_resposta = 0;
     envio_atual.inicio_envio = time(NULL);
 
@@ -928,6 +1198,7 @@ static int verificar_resposta_replica(void) {
 
     int ok = 0;
     msgpack_unpacked resposta;
+    msgpack_unpacked_init(&resposta);
 
     if (desempacotar(
             zmq_msg_data(&resposta_msg),
@@ -959,8 +1230,35 @@ static int verificar_resposta_replica(void) {
         return -1;
     }
 
+    // Verifica se a publicacao ainda existe na fila
+    if (
+        envio_atual.indice_publicacao < 0 ||
+        envio_atual.indice_publicacao >= total_replicas_pendentes
+    ) {
+        encerrar_envio_replica();
+        return -1;
+    }
+
+    // Registra qual servidor confirmou a publicacao
+    PublicacaoPendente *p =
+        &replicas_pendentes[envio_atual.indice_publicacao];
+
+    // Usa o nome armazenado no momento do envio
+    const char *nome_servidor =
+        envio_atual.nome_servidor;
+
+    if (!registrar_confirmacao_replica(p, nome_servidor)) {
+        encerrar_envio_replica();
+        return -1;
+    }
+
+    // Finaliza a tentativa apos receber a confirmacao
+    encerrar_envio_replica();
+
     return 1;
 }
+
+
 
 // Verifica se a tentativa de replicacao expirou
 static int verificar_timeout_replica(void) {
@@ -976,7 +1274,7 @@ static int verificar_timeout_replica(void) {
     ) {
         printf(
             "Timeout na replicacao para %s\n",
-            servidores[envio_atual.indice_servidor].nome
+            envio_atual.nome_servidor
         );
 
         encerrar_envio_replica();
@@ -985,6 +1283,51 @@ static int verificar_timeout_replica(void) {
     }
 
     return 0;
+}
+
+// Procura uma publicacao pendente para replicar
+static void iniciar_proxima_replica(void) {
+    if (envio_atual.socket != NULL || total_replicas_pendentes == 0) return;
+
+    time_t agora = time(NULL);
+    if (difftime(agora, ultima_tentativa_replicacao) < INTERVALO_REPLICACAO)
+        return;
+    ultima_tentativa_replicacao = agora;
+
+    // Alterna as publicacoes para nao bloquear a fila se um destino cair.
+    for (int n = 0; n < total_replicas_pendentes; n++) {
+        int i = (proxima_publicacao_replicacao + n) % total_replicas_pendentes;
+        PublicacaoPendente *p = &replicas_pendentes[i];
+        for (int j = 0; j < p->total_destinos; j++) {
+            const char *destino = p->servidores_destino[j];
+            if (servidor_confirmou_replica(p, destino)) continue;
+            proxima_publicacao_replicacao = (i + 1) % total_replicas_pendentes;
+            if (iniciar_envio_replica(i, destino)) {
+                if (!transmitir_replica_pendente()) encerrar_envio_replica();
+            }
+            return;
+        }
+    }
+}
+
+// Remove publicacoes confirmadas quando nao existe envio ativo
+static void limpar_replicas_confirmadas(void) {
+
+    // Nao altera a fila durante um envio
+    if (envio_atual.socket != NULL) {
+        return;
+    }
+
+    for (int i = 0; i < total_replicas_pendentes;) {
+
+        PublicacaoPendente *p = &replicas_pendentes[i];
+
+        if (replica_totalmente_confirmada(p)) {
+            remover_replica_pendente(i);
+        } else {
+            i++;
+        }
+    }
 }
 
 // Publica mensagem no proxy
@@ -1296,12 +1639,29 @@ static void processar(
             );
         }
         else if (!canal_existe(canal)) {
+
+    responder(
+
+        socket,
+
+        "erro",
+
+        "Canal nao existe",
+
+        0
+
+    );
+
+}
+
+        else if ( total_replicas_pendentes >= MAX_REPLICAS_PENDENTES) {
             responder(
                 socket,
                 "erro",
-                "Canal nao existe",
+                "Fila de replicacao cheia. Tente novamente.",
                 0
             );
+
         }
         else if (!salvar_publicacao(
                      canal,
@@ -1317,47 +1677,23 @@ static void processar(
                 0
             );
         }
-        else if (publicar(
-                     publicador,
-                     canal,
-                     mensagem
-                 )) {
-
-            // Adiciona a publicacao a fila de replicacao
-            if (adicionar_replica_pendente(
-                    id_publicacao,
-                    canal,
-                    mensagem,
-                    timestamp
-                )) {
-                printf(
-                    "Publicacao %s adicionada a fila de replicacao\n",
-                    id_publicacao
-                );
+        else {
+            // Primeiro coloca na fila; o arquivo em disco permite recuperar
+            // mesmo se houver falha entre a gravacao e este ponto.
+            if (!adicionar_replica_pendente(
+                    id_publicacao, canal, mensagem, timestamp)) {
+                responder(socket, "erro",
+                          "Publicacao salva; replicacao pendente de recuperacao", 0);
+            }
+            else if (publicar(publicador, canal, mensagem)) {
+                printf("Publicacao %s adicionada a fila de replicacao\n",
+                       id_publicacao);
+                fflush(stdout);
+                responder(socket, "sucesso", "Mensagem publicada", 0);
             }
             else {
-                printf(
-                    "AVISO: fila de replicacao cheia para %s\n",
-                    id_publicacao
-                );
+                responder(socket, "erro", "Erro ao publicar mensagem", 0);
             }
-
-            fflush(stdout);
-
-            responder(
-                socket,
-                "sucesso",
-                "Mensagem publicada",
-                0
-            );
-        }
-        else {
-            responder(
-                socket,
-                "erro",
-                "Erro ao publicar mensagem",
-                0
-            );
         }
     }
 
@@ -2147,6 +2483,8 @@ int main(void) {
     fflush(stdout);
 
     consultar_referencia("listar");
+    recuperar_replicas_do_disco();
+    ultima_recuperacao_replicacao = time(NULL);
 
     // Conecta ao broker
     const char *porta = getenv("SERVIDOR_PORTA");
@@ -2355,14 +2693,51 @@ int main(void) {
                 }
             }
 
-            // Nenhum coordenador conhecido
-            else if (
+           else if (
+
                 !coordenador[0] &&
+
                 !aguardando_coordenador
+
             ) {
+
                 iniciar_eleicao();
+
             }
+
         }
+
+        // Verifica se existe uma replicacao em andamento
+
+        if (envio_atual.socket != NULL) {
+
+            // Verifica se o outro servidor confirmou
+
+            if (envio_atual.aguardando_resposta) {
+
+                verificar_resposta_replica();
+
+            }
+
+            // Encerra tentativas que demoraram demais
+
+            verificar_timeout_replica();
+
+        }
+
+
+        // Remove publicacoes que ja foram confirmadas
+        limpar_replicas_confirmadas();
+        if (difftime(time(NULL), ultima_recuperacao_replicacao) >=
+            INTERVALO_RECUPERACAO) {
+            ultima_recuperacao_replicacao = time(NULL);
+            recuperar_replicas_do_disco();
+        }
+        // Procura publicacoes pendentes para enviar
+        iniciar_proxima_replica();
+
+
+
     }
 
     zmq_close(assinante);
