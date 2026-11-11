@@ -10,6 +10,7 @@
 #define MAX_SERVIDORES 32
 #define INTERVALO_ELEICAO 5
 #define MAX_REPLICAS_PENDENTES 100
+#define INTERVALO_REPLICACAO 2
 
 typedef struct {
     char nome[100];
@@ -21,7 +22,21 @@ typedef struct {
     char canal[100];
     char mensagem[1024];
     double timestamp;
+
+    char servidores_confirmados[MAX_SERVIDORES][100];
+    int total_confirmados;
+
 } PublicacaoPendente;
+
+typedef struct {
+
+    void *socket;
+    int indice_publicacao;
+    int indice_servidor;
+    int aguardando_resposta;
+    time_t inicio_envio;
+
+} EnvioReplica;
 
 static int relogio_logico = 0;
 static int mensagens_recebidas = 0;
@@ -30,6 +45,8 @@ static double diferenca_relogio = 0;
 static unsigned long long contador_publicacoes = 0;
 static PublicacaoPendente replicas_pendentes[MAX_REPLICAS_PENDENTES];
 static int total_replicas_pendentes = 0;
+static time_t ultima_tentativa_replicacao = 0;
+static EnvioReplica envio_atual = {0};
 
 static Servidor servidores[MAX_SERVIDORES];
 static int total_servidores = 0;
@@ -633,6 +650,16 @@ static int adicionar_replica_pendente(
 
     p->timestamp = timestamp;
 
+    // Inicializa o controle de confirmacoes
+    p->total_confirmados = 0;
+
+    memset(
+        p->servidores_confirmados,
+        0,
+        sizeof(p->servidores_confirmados)
+
+    );
+
     total_replicas_pendentes++;
 
     return 1;
@@ -751,6 +778,213 @@ static int enviar_publicacao(
     zmq_close(socket);
 
     return ok;
+}
+
+// Encerra uma tentativa de envio de replica
+
+static void encerrar_envio_replica(void) {
+    if (envio_atual.socket != NULL) {
+        zmq_close(envio_atual.socket);
+    }
+    
+    memset(&envio_atual, 0, sizeof(envio_atual));
+
+}
+
+// Inicia o envio assincrono de uma replica
+static int iniciar_envio_replica(
+    int indice_publicacao,
+    int indice_servidor
+) {
+    if (envio_atual.socket != NULL) {
+        return 0;
+    }
+
+    if (
+        indice_publicacao < 0 ||
+        indice_publicacao >= total_replicas_pendentes ||
+        indice_servidor < 0 ||
+        indice_servidor >= total_servidores
+    ) {
+        return 0;
+    }
+
+    char endereco[180];
+
+    snprintf(
+        endereco,
+        sizeof(endereco),
+        "tcp://%s:6001",
+        servidores[indice_servidor].nome
+    );
+
+    void *socket = novo_req(endereco, 1500);
+
+    if (!socket) {
+        return 0;
+    }
+
+    envio_atual.socket = socket;
+    envio_atual.indice_publicacao = indice_publicacao;
+    envio_atual.indice_servidor = indice_servidor;
+    envio_atual.aguardando_resposta = 0;
+    envio_atual.inicio_envio = time(NULL);
+
+    return 1;
+}
+
+// Envia a publicacao sem bloquear o servidor
+static int transmitir_replica_pendente(void) {
+    if (
+        envio_atual.socket == NULL ||
+        envio_atual.aguardando_resposta
+    ) {
+        return 0;
+    }
+
+    PublicacaoPendente *p =
+        &replicas_pendentes[envio_atual.indice_publicacao];
+
+    msgpack_sbuffer buffer;
+    msgpack_packer pk;
+
+    msgpack_sbuffer_init(&buffer);
+    msgpack_packer_init(
+        &pk,
+        &buffer,
+        msgpack_sbuffer_write
+    );
+
+    msgpack_pack_map(&pk, 7);
+
+    texto(&pk, "tipo");
+    texto(&pk, "replicar_publicacao");
+
+    texto(&pk, "nome");
+    texto(&pk, meu_nome);
+
+    texto(&pk, "id");
+    texto(&pk, p->id);
+
+    texto(&pk, "canal");
+    texto(&pk, p->canal);
+
+    texto(&pk, "mensagem");
+    texto(&pk, p->mensagem);
+
+    texto(&pk, "timestamp");
+    msgpack_pack_double(&pk, p->timestamp);
+
+    texto(&pk, "relogio_logico");
+    msgpack_pack_int(&pk, incrementar_relogio());
+
+    int enviado = zmq_send(
+        envio_atual.socket,
+        buffer.data,
+        buffer.size,
+        ZMQ_DONTWAIT
+    );
+
+    msgpack_sbuffer_destroy(&buffer);
+
+    if (enviado < 0) {
+        return 0;
+    }
+
+    envio_atual.aguardando_resposta = 1;
+    envio_atual.inicio_envio = time(NULL);
+
+    return 1;
+}
+
+// Verifica se o outro servidor confirmou a replicacao
+static int verificar_resposta_replica(void) {
+    if (
+        envio_atual.socket == NULL ||
+        !envio_atual.aguardando_resposta
+    ) {
+        return 0;
+    }
+
+    zmq_msg_t resposta_msg;
+    zmq_msg_init(&resposta_msg);
+
+    int n = zmq_msg_recv(
+        &resposta_msg,
+        envio_atual.socket,
+        ZMQ_DONTWAIT
+    );
+
+    if (n < 0) {
+        zmq_msg_close(&resposta_msg);
+
+        if (errno == EAGAIN) {
+            return 0;
+        }
+
+        encerrar_envio_replica();
+        return -1;
+    }
+
+    int ok = 0;
+    msgpack_unpacked resposta;
+
+    if (desempacotar(
+            zmq_msg_data(&resposta_msg),
+            (size_t)n,
+            &resposta
+        )) {
+        char status[40] = "";
+
+        ler_texto(
+            campo(resposta.data, "status"),
+            status,
+            sizeof(status)
+        );
+
+        atualizar_relogio(
+            ler_inteiro(
+                campo(resposta.data, "relogio_logico")
+            )
+        );
+
+        ok = strcmp(status, "sucesso") == 0;
+    }
+
+    msgpack_unpacked_destroy(&resposta);
+    zmq_msg_close(&resposta_msg);
+
+    if (!ok) {
+        encerrar_envio_replica();
+        return -1;
+    }
+
+    return 1;
+}
+
+// Verifica se a tentativa de replicacao expirou
+static int verificar_timeout_replica(void) {
+    if (envio_atual.socket == NULL) {
+        return 0;
+    }
+
+    time_t agora = time(NULL);
+
+    if (
+        difftime(agora, envio_atual.inicio_envio)
+        >= INTERVALO_REPLICACAO
+    ) {
+        printf(
+            "Timeout na replicacao para %s\n",
+            servidores[envio_atual.indice_servidor].nome
+        );
+
+        encerrar_envio_replica();
+
+        return 1;
+    }
+
+    return 0;
 }
 
 // Publica mensagem no proxy
