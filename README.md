@@ -2,105 +2,60 @@
 
 ## Introdução
 
+Este projeto foi desenvolvido para a disciplina de Sistemas Distribuídos.
+
+O objetivo é implementar um sistema de comunicação distribuído, no qual bots podem realizar login, criar canais, publicar e receber mensagens.
 
 ## Tecnologias utilizadas
 
-- **Python:** utilizado para desenvolver os bots, o broker e o proxy Pub/Sub.
+- **Python:** utilizado para desenvolver os bots, o broker, o proxy Pub/Sub e o serviço de referência.
 - **C:** utilizado para desenvolver os servidores.
 - **ZeroMQ:** utilizado para a comunicação entre os componentes.
 - **MessagePack:** utilizado para serializar as mensagens em formato binário.
 - **Docker Compose:** utilizado para executar os containers.
 
-
 ## Funcionamento
 
-O sistema possui quatro bots, dois servidores, um broker e um proxy Pub/Sub.
+O sistema possui quatro bots, dois servidores, um broker, um proxy Pub/Sub e um serviço de referência, totalizando nove containers.
 
 Os bots enviam solicitações ao broker, que encaminha as mensagens aos servidores e devolve as respostas aos bots.
 
-O proxy Pub/Sub é responsável por distribuir as publicações aos bots inscritos nos canais.
+O proxy Pub/Sub distribui as publicações aos bots inscritos nos canais.
 
 Todas as mensagens transmitidas entre os componentes são serializadas com MessagePack e possuem um timestamp.
 
-### Login
+## Funcionalidades implementadas
 
-Ao iniciar, cada bot envia seu nome para realizar o login.
-
-O servidor verifica o nome e responde informando se o login foi realizado com sucesso ou se ocorreu algum erro.
-
-Caso receba uma resposta de erro, o bot aguarda 10 segundos antes de tentar novamente.
-
-### Criação de canais
-
-Após realizar o login, o bot solicita a lista dos canais disponíveis.
-
-Se existirem menos de cinco canais, o bot tenta criar um novo canal.
-
-O broker encaminha a solicitação aos dois servidores, que verificam se o canal já existe.
-
-Se o canal não existir, ele será criado. Caso já exista, o sistema retorna uma mensagem de erro.
-
-### Listagem de canais
-
-O bot solicita a lista de canais ao broker.
-
-O broker consulta os dois servidores, reúne os nomes dos canais e devolve a lista ao bot.
-
-### Inscrição nos canais
-
-Após consultar os canais disponíveis, cada bot escolhe aleatoriamente até três canais para se inscrever.
-
-As inscrições são realizadas utilizando um socket SUB do ZeroMQ.
-
-Cada bot pode receber mensagens de diferentes canais utilizando a mesma conexão.
-
-### Publicação de mensagens
-
-Após realizar as inscrições, os bots começam a publicar mensagens automaticamente.
-
-Cada bot escolhe aleatoriamente um canal disponível e envia dez mensagens, com intervalo de um segundo entre elas.
-
-Após as dez mensagens, o processo é repetido continuamente.
-
-As publicações são enviadas ao broker utilizando a comunicação REQ/REP.
-
-O broker distribui as solicitações de publicação entre os dois servidores utilizando Round Robin.
-
-O servidor responsável pela publicação salva a mensagem em disco e a encaminha ao proxy Pub/Sub.
-
-### Recebimento de mensagens
-
-O proxy Pub/Sub utiliza duas portas:
-
-- **5557 (XSUB):** recebe as publicações dos servidores.
-- **5558 (XPUB):** distribui as publicações aos bots inscritos.
-
-Os bots utilizam uma thread para receber mensagens enquanto continuam realizando publicações.
-
-Ao receber uma mensagem, o bot exibe:
-
-- Nome do canal.
-- Conteúdo da mensagem.
-- Timestamp de envio.
-- Timestamp de recebimento.
-
-Dessa forma, os bots conseguem publicar e receber mensagens simultaneamente.
+- Login dos bots com tentativa automática após 10 segundos em caso de erro.
+- Criação de canais.
+- Listagem dos canais disponíveis.
+- Inscrição em até três canais aleatórios.
+- Publicação automática de mensagens.
+- Recebimento de mensagens utilizando Pub/Sub.
+- Publicação e recebimento simultâneos utilizando threads.
+- Distribuição das publicações entre os servidores com Round Robin.
+- Persistência de logins, canais e publicações.
+- Relógios lógicos de Lamport.
+- Cadastro dos servidores no serviço de referência.
+- Monitoramento dos servidores utilizando heartbeat.
+- Eleição de coordenador utilizando o algoritmo Bully.
+- Sincronização de relógios utilizando o algoritmo Berkeley.
+- Replicação de publicações entre os servidores.
+- Confirmação e recuperação de replicações pendentes.
 
 ## Persistência dos dados
 
-Os servidores armazenam as informações em três arquivos:
+Os servidores armazenam as informações nos seguintes arquivos:
 
-- `logins.txt`: armazena os nomes dos usuários que realizaram login e seus timestamps.
-- `canais.txt`: armazena os nomes dos canais criados e seus timestamps.
-- `publicacoes.txt`: armazena as mensagens publicadas, com seus canais e timestamps.
+- `logins.txt`
+- `canais.txt`
+- `publicacoes.txt`
 
-Cada servidor possui seu próprio volume Docker, mantendo os arquivos separados.
-
-Os dados continuam armazenados após a reinicialização dos containers, desde que os volumes não sejam removidos.
+Cada servidor possui seu próprio volume Docker, permitindo preservar os dados após a reinicialização dos containers.
 
 ## Como executar
 
-Para executar o projeto, é necessário ter Docker e Docker Compose instalados.
+É necessário ter Docker e Docker Compose instalados.
 
 Na pasta principal do projeto, execute:
 
@@ -108,26 +63,116 @@ Na pasta principal do projeto, execute:
 docker compose up --build
 ```
 
-Para executar os containers em segundo plano:
+Para executar em segundo plano:
 
 ```bash
 docker compose up -d --build
 ```
 
-Para acompanhar as mensagens de um bot:
+Para verificar os containers:
 
 ```bash
-docker compose logs -f bot1
+docker compose ps
 ```
 
-Para consultar as publicações armazenadas nos servidores:
+Para acompanhar os logs:
 
 ```bash
-docker compose exec servidor1 tail /dados/publicacoes.txt
-docker compose exec servidor2 tail /dados/publicacoes.txt
+docker compose logs -f
 ```
 
-Para encerrar os containers:
+## Comandos para demonstração
+
+### Visualizar os bots
+
+```bash
+docker compose logs -f --tail=30 bot1 bot2
+```
+
+### Visualizar o broker
+
+```bash
+docker compose logs -f --tail=30 broker
+```
+
+### Visualizar os servidores
+
+```bash
+docker compose logs -f --tail=30 servidor1 servidor2
+```
+
+### Visualizar o serviço de referência
+
+```bash
+docker compose logs -f --tail=50 referencia
+```
+
+### Consultar os canais criados
+
+```bash
+docker compose exec servidor1 cat /dados/canais.txt
+```
+
+### Consultar as publicações
+
+Servidor 1:
+
+```bash
+docker compose exec servidor1 tail -n 20 /dados/publicacoes.txt
+```
+
+Servidor 2:
+
+```bash
+docker compose exec servidor2 tail -n 20 /dados/publicacoes.txt
+```
+
+### Demonstrar a persistência
+
+Reiniciar o servidor:
+
+```bash
+docker compose restart servidor1
+```
+
+Verificar se os dados continuam armazenados:
+
+```bash
+docker compose exec servidor1 tail -n 20 /dados/publicacoes.txt
+```
+
+### Demonstrar a eleição Bully
+
+Identificar nos logs qual servidor está atuando como coordenador.
+
+Caso seja o servidor 2, interrompê-lo:
+
+```bash
+docker compose stop servidor2
+```
+
+Acompanhar os logs:
+
+```bash
+docker compose logs -f --tail=50 servidor1 referencia
+```
+
+Verificar se uma nova eleição foi realizada.
+
+Iniciar novamente o servidor:
+
+```bash
+docker compose start servidor2
+```
+
+### Verificar a replicação
+
+```bash
+docker compose exec servidor1 tail -n 20 /dados/publicacoes.txt
+docker compose exec servidor2 tail -n 20 /dados/publicacoes.txt
+```
+
+### Encerrar o projeto
 
 ```bash
 docker compose down
