@@ -60,13 +60,8 @@ Cada servidor possui seu próprio volume Docker, permitindo preservar os dados a
 Na pasta principal do projeto, execute:
 
 ```bash
-docker compose up --build
-```
-
-Para executar em segundo plano:
-
-```bash
-docker compose up -d --build
+docker compose up --build -d
+docker compose ps
 ```
 
 Para verificar os containers:
@@ -86,7 +81,7 @@ docker compose logs -f
 ### Visualizar os bots
 
 ```bash
-docker compose logs -f --tail=30 bot1 bot2
+docker compose logs -f --tail=30 bot1 bot2 bot3 bot4
 ```
 
 ### Visualizar o broker
@@ -145,6 +140,10 @@ docker compose exec servidor1 tail -n 20 /dados/publicacoes.txt
 
 Identificar nos logs qual servidor está atuando como coordenador.
 
+```bash
+docker compose logs --tail=500 servidor1 servidor2 | grep -Ei "coordenador|rank|BERKELEY"
+```
+
 Caso seja o servidor 2, interrompê-lo:
 
 ```bash
@@ -158,6 +157,10 @@ docker compose logs -f --tail=50 servidor1 referencia
 ```
 
 Verificar se uma nova eleição foi realizada.
+
+```bash
+docker compose logs servidor1 servidor2 | grep -Ei 'eleicao|eleito|coordenador'
+```
 
 Iniciar novamente o servidor:
 
